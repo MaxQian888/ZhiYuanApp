@@ -1,0 +1,21 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: zhiyuan
+      MYSQL_ROOT_PASSWORD: zhiyuan-dev
+      MYSQL_USER: zhiyuan
+      MYSQL_PASSWORD: zhiyuan-dev
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - zhiyuan-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pzhiyuan-dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  zhiyuan-mysql:

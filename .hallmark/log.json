@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-08-12",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "enrichment": "none",
+    "brief": "智鸢无人机运营控制台全功能迁移",
+    "slopTest": "pass (58/58)",
+    "navigation": "N13 command search + Workbench rail",
+    "footer": "Ft2 utility line",
+    "responsive": [320, 375, 414, 768, 1280, 1440]
+  }
+]

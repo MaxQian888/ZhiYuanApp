@@ -1,10 +1,37 @@
 ---
-title: Getting Started
-description: Welcome to the react-quick-starter documentation.
+title: 智鸢运行与部署
+description: 智鸢无人机运营平台的本地运行、API、设备模拟器与生产配置。
 ---
 
-# Getting Started
+# 智鸢运行与部署
 
-This is the documentation skeleton for `react-quick-starter`.
+智鸢由 Next.js 静态前端、Tauri 桌面壳和 Spring Boot API 组成。默认前端数据模式为 `simulator`；联调和生产使用 `NEXT_PUBLIC_API_MODE=remote`。
 
-Add your content here.
+## 本地环境
+
+```bash
+pnpm install
+docker compose up -d mysql
+cd server && JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn spring-boot:run
+cd .. && NEXT_PUBLIC_API_MODE=remote pnpm dev
+```
+
+开发账号为 `admin / admin123` 与 `manager / admin123`。Web 地址为 `http://localhost:3000`，API 为 `http://localhost:8080`。
+
+## API 与实时事件
+
+API 使用 `{ code, message, data, traceId }` 信封，分页使用 `{ items, page, size, total, totalPages }`。入口包括 `/api/v1/auth`、`dashboard`、`search`、`uavs`、`alerts`、`pods`、`device-bindings`、`users`、`goods`、`orders`、`tasks` 与 `system`。
+
+指令接口返回 HTTP 202 与 `commandId`。状态为 `QUEUED → SENT → ACKNOWLEDGED`，失败为 `FAILED` 或 `TIMEOUT`。`/api/v1/uavs/telemetry/stream` 使用 SSE，事件名固定为 `telemetry` 与 `heartbeat`；客户端断线后指数退避重连并重新获取快照。
+
+## 设备、地图与语音
+
+首版 `UavAdapter` 为明确标识的模拟器。真实 MQTT/HTTP 协议只替换适配层。地图通过前端 `MapProvider` 测试实现支持选择、定位、缩放、轨迹与任务起终点，不绑定厂商。语音优先 Web Speech API，权限拒绝或不支持时自动保留等价文本指令输入；两者都必须经过解析、目标确认和安全确认。
+
+## 生产安全
+
+- 设置至少 32 字节随机 `JWT_SECRET` 与精确 `CORS_ORIGINS`。
+- 设置 `FLYWAY_LOCATIONS=classpath:db/migration`，排除 `db/dev` 种子。
+- Web refresh token 使用 HttpOnly cookie；Tauri 使用 Stronghold。
+- 更新服务只有在配置签名 manifest 与 pubkey 后才能启用。
+- `admin` 拥有完整权限，`manager` 不能管理管理员或删除主数据。

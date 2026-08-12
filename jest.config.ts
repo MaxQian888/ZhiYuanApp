@@ -189,7 +189,7 @@ const config: Config = {
   testMatch: ["**/__tests__/**/*.?([mc])[jt]s?(x)", "**/?(*.)+(spec|test).?([mc])[jt]s?(x)"],
 
   // An array of regexp pattern strings that are matched against all test paths, matched tests are skipped
-  testPathIgnorePatterns: ["/node_modules/", "/.next/", "/out/", "/src-tauri/"],
+  testPathIgnorePatterns: ["/node_modules/", "/.next/", "/out/", "/src-tauri/", "/tests/e2e/"],
 
   // The regexp pattern or array of patterns that Jest uses to detect test files
   // testRegex: [],

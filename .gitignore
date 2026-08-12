@@ -13,6 +13,8 @@ node_modules
 
 # testing
 /coverage
+/playwright-report/
+/test-results/
 junit.xml
 *.test.js.snap
 *.test.ts.snap
@@ -24,6 +26,7 @@ junit.xml
 
 # production
 /build
+/server/target/
 
 # misc
 .DS_Store

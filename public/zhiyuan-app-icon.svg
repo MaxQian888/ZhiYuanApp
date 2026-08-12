@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">智鸢运营平台图标</title>
+  <desc id="description">钴蓝色方形中的白色飞鸢与无人机航迹符号</desc>
+  <rect width="1024" height="1024" rx="224" fill="#1267E8" />
+  <path
+    d="M512 172 830 420 666 452 512 354 358 452 194 420Z"
+    fill="#F8FAFF"
+  />
+  <path
+    d="m512 354 154 98-70 176-84 224-84-224-70-176Z"
+    fill="#DDEAFF"
+  />
+  <path
+    d="M512 354v498l84-224 70-176Z"
+    fill="#F8FAFF"
+  />
+  <circle cx="512" cy="492" r="58" fill="#1267E8" />
+  <path
+    d="M512 450a42 42 0 1 0 0 84 42 42 0 0 0 0-84Zm0 24a18 18 0 1 1 0 36 18 18 0 0 1 0-36Z"
+    fill="#F8FAFF"
+  />
+  <path
+    d="M376 514H250M648 514h126"
+    fill="none"
+    stroke="#F8FAFF"
+    stroke-linecap="round"
+    stroke-width="32"
+  />
+  <circle cx="226" cy="514" r="48" fill="none" stroke="#F8FAFF" stroke-width="24" />
+  <circle cx="798" cy="514" r="48" fill="none" stroke="#F8FAFF" stroke-width="24" />
+</svg>

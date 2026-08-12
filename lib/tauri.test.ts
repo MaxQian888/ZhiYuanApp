@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { greet, isTauri } from "./tauri"
+import { getPlatformInfo, isTauri } from "./tauri"
 
 jest.mock("@tauri-apps/api/core")
 
@@ -22,17 +22,26 @@ describe("lib/tauri", () => {
     })
   })
 
-  describe("greet", () => {
-    it("invokes the greet command with the name argument", async () => {
-      mockedInvoke.mockResolvedValue("Hello, X!")
-      const result = await greet("X")
-      expect(mockedInvoke).toHaveBeenCalledWith("greet", { name: "X" })
-      expect(result).toBe("Hello, X!")
+  describe("getPlatformInfo", () => {
+    it("returns null outside Tauri", async () => {
+      await expect(getPlatformInfo()).resolves.toBeNull()
+      expect(mockedInvoke).not.toHaveBeenCalled()
     })
 
-    it("propagates rejection from invoke", async () => {
-      mockedInvoke.mockRejectedValue(new Error("boom"))
-      await expect(greet("X")).rejects.toThrow("boom")
+    it("invokes the native platform command inside Tauri", async () => {
+      ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
+      mockedInvoke.mockResolvedValue({
+        platform: "macos",
+        architecture: "aarch64",
+        appVersion: "0.1.0",
+      })
+      await expect(getPlatformInfo()).resolves.toEqual({
+        platform: "macos",
+        architecture: "aarch64",
+        appVersion: "0.1.0",
+      })
+      expect(mockedInvoke).toHaveBeenCalledWith("platform_info")
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
     })
   })
 })

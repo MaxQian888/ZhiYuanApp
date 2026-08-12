@@ -6,6 +6,7 @@ coverage
 dist
 src-tauri/target
 src-tauri/gen
+public/zhiyuan-app-icon.svg
 pnpm-lock.yaml
 *.min.js
 *.min.css
