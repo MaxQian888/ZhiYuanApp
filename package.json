@@ -87,7 +87,7 @@
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1",
     "jest-junit": "^17.0.0",
-    "lint-staged": "^17.0.4",
+    "lint-staged": "^17.3.0",
     "msw": "^2.12.10",
     "prettier": "^3.8.3",
     "shadcn": "^4.7.0",
