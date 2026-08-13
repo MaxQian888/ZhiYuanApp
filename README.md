@@ -66,5 +66,7 @@ cd .. && pnpm tauri build
 - 必须替换 `JWT_SECRET`，精确设置 `CORS_ORIGINS`，为 MySQL 使用非 root 账号并启用 TLS。
 - `admin` 可执行全部操作；`manager` 可监控、控制与处理订单任务，但不能管理管理员、删除主数据或修改安全配置。
 - updater 需要在 `src-tauri/tauri.conf.json` 配置签名后的 endpoints/pubkey；未配置时保持禁用。
+- 桌面端发现已签名的新版本后可直接下载并安装，并显示真实下载进度；Web 端只读取后端版本状态。
+- Remote 模式不会在接口加载失败时回退到演示数据；顶部同步带会列出失败模块并提供原位重试。
 
 API、部署和配置说明也可运行 `pnpm docs:dev` 后在 [http://localhost:3001](http://localhost:3001) 查看。

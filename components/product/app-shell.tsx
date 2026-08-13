@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
+import { useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import {
   Activity,
@@ -16,6 +17,7 @@ import {
   Mic,
   Package,
   Plane,
+  RefreshCw,
   Search,
   Settings,
   UserRound,
@@ -23,6 +25,8 @@ import {
   Warehouse,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Spinner } from "@/components/ui/spinner"
 import {
   CommandDialog,
   CommandEmpty,
@@ -35,6 +39,7 @@ import {
 import { useCopy } from "@/lib/i18n-product"
 import { api } from "@/lib/api/client"
 import { isRemoteApi } from "@/lib/env"
+import { syncResourceKeys } from "@/lib/sync-state"
 import { useProductStore } from "@/stores/product-store"
 
 const nav = [
@@ -67,6 +72,7 @@ const mobileNav = [
 ]
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient()
   const pathname = usePathname()
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -79,6 +85,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const orders = useProductStore((state) => state.orders)
   const goods = useProductStore((state) => state.goods)
   const realtimeState = useProductStore((state) => state.realtimeState)
+  const dataSyncPending = useProductStore((state) => state.dataSyncPending)
+  const dataSyncErrors = useProductStore((state) => state.dataSyncErrors)
   const copy = useCopy(locale)
   const activeItem = nav.find(
     (item) => pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
@@ -223,7 +231,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 : locale === "zh-CN"
                   ? "离线"
                   : "Offline"}{" "}
-            · {copy.simulator}
+            · {isRemoteApi ? "REMOTE API" : copy.simulator}
           </span>
           <Button
             variant="outline"
@@ -238,6 +246,45 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Button>
         </div>
       </header>
+      {isRemoteApi && (dataSyncPending || dataSyncErrors.length > 0) && (
+        <Alert className="sync-strip" variant={dataSyncErrors.length ? "destructive" : "default"}>
+          {dataSyncPending && !dataSyncErrors.length ? <Spinner /> : <AlertTriangle />}
+          <AlertTitle>
+            {dataSyncErrors.length
+              ? locale === "zh-CN"
+                ? "部分运营数据同步失败"
+                : "Some operations data failed to sync"
+              : locale === "zh-CN"
+                ? "正在同步运营数据"
+                : "Syncing operations data"}
+          </AlertTitle>
+          <AlertDescription>
+            {dataSyncErrors.length
+              ? `${locale === "zh-CN" ? "失败模块" : "Failed resources"}: ${dataSyncErrors.join(", ")}`
+              : locale === "zh-CN"
+                ? "完成前不会使用演示数据替代真实结果。"
+                : "Demo records are never substituted for live results."}
+          </AlertDescription>
+          {dataSyncErrors.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void queryClient.refetchQueries({
+                  predicate: (query) =>
+                    syncResourceKeys.includes(
+                      String(query.queryKey[0]) as (typeof syncResourceKeys)[number]
+                    ),
+                  type: "active",
+                })
+              }
+            >
+              <RefreshCw />
+              {locale === "zh-CN" ? "重试" : "Retry"}
+            </Button>
+          )}
+        </Alert>
+      )}
       <aside className="side-nav" aria-label={locale === "zh-CN" ? "主导航" : "Primary navigation"}>
         {navGroups.map((group) => (
           <div className="nav-group" key={group.label.en}>

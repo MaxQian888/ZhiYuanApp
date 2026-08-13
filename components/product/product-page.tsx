@@ -72,7 +72,13 @@ import { useCopy } from "@/lib/i18n-product"
 import { api } from "@/lib/api/client"
 import { resumeSessionRecovery, suppressSessionRecovery } from "@/lib/api/client"
 import { isRemoteApi } from "@/lib/env"
-import { checkForAppUpdate, getPlatformInfo, isTauri, type PlatformInfo } from "@/lib/tauri"
+import {
+  checkForAppUpdate,
+  getPlatformInfo,
+  installAppUpdate,
+  isTauri,
+  type PlatformInfo,
+} from "@/lib/tauri"
 import { useProductStore } from "@/stores/product-store"
 
 export type ProductView =
@@ -237,7 +243,9 @@ function DashboardView() {
           {
             label: copy.onlineUav,
             value: online.length,
-            detail: `${Math.round((online.length / store.uavs.length) * 100)}%`,
+            detail: store.uavs.length
+              ? `${Math.round((online.length / store.uavs.length) * 100)}%`
+              : "—",
           },
           {
             label: copy.inPod,
@@ -266,7 +274,7 @@ function DashboardView() {
                   : store.locale === "zh-CN"
                     ? "离线数据"
                     : "Offline data"}{" "}
-              · {copy.simulator}
+              · {isRemoteApi ? "REMOTE API" : copy.simulator}
             </span>
           }
         >
@@ -2538,6 +2546,10 @@ function SettingsView() {
   const queryClient = useQueryClient()
   const copy = useCopy(store.locale)
   const [updateMessage, setUpdateMessage] = useState("")
+  const [availableUpdate, setAvailableUpdate] = useState<string | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState(0)
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [currentPassword, setCurrentPassword] = useState("")
@@ -2710,18 +2722,56 @@ function SettingsView() {
     )
   }
   const checkUpdate = async () => {
+    setCheckingUpdate(true)
+    setAvailableUpdate(null)
     if (!isTauri()) {
       const result = await executeAction(api.version, store.locale)
-      if (!result.ok) return
-      setUpdateMessage(
-        result.value.configured
-          ? `${store.locale === "zh-CN" ? "当前版本" : "Current version"} ${result.value.currentVersion}`
-          : copy.updateUnavailable
-      )
+      if (result.ok)
+        setUpdateMessage(
+          result.value.configured
+            ? `${store.locale === "zh-CN" ? "当前版本" : "Current version"} ${result.value.currentVersion}`
+            : copy.updateUnavailable
+        )
+      setCheckingUpdate(false)
       return
     }
     const result = await checkForAppUpdate()
-    setUpdateMessage(result.message)
+    if (result.available && result.version) {
+      setAvailableUpdate(result.version)
+      setUpdateMessage(
+        store.locale === "zh-CN"
+          ? `发现新版本 ${result.version}`
+          : `Version ${result.version} is available`
+      )
+    } else if (!result.configured) {
+      setUpdateMessage(copy.updateUnavailable)
+    } else {
+      setUpdateMessage(
+        store.locale === "zh-CN" && result.message.includes("latest")
+          ? "当前已是最新配置版本"
+          : result.message
+      )
+    }
+    setCheckingUpdate(false)
+  }
+  const installUpdate = async () => {
+    setInstallingUpdate(true)
+    setUpdateProgress(0)
+    const result = await installAppUpdate((downloaded, total) => {
+      if (total) setUpdateProgress(Math.min(100, Math.round((downloaded / total) * 100)))
+    })
+    setInstallingUpdate(false)
+    setUpdateProgress(result.installed ? 100 : 0)
+    setUpdateMessage(
+      result.installed
+        ? store.locale === "zh-CN"
+          ? `版本 ${result.version} 已安装，请重启应用完成更新。`
+          : result.message
+        : store.locale === "zh-CN"
+          ? `更新安装失败：${result.message}`
+          : result.message
+    )
+    if (result.installed) setAvailableUpdate(null)
   }
   return (
     <>
@@ -2978,7 +3028,11 @@ function SettingsView() {
               <Button
                 onClick={() => {
                   store.clearNonAuthCache()
-                  toast.success(copy.cacheCleared)
+                  void queryClient
+                    .resetQueries({
+                      predicate: (query) => query.queryKey[0] !== "session",
+                    })
+                    .then(() => toast.success(copy.cacheCleared))
                 }}
               >
                 <Database />
@@ -2992,14 +3046,33 @@ function SettingsView() {
                 </span>
                 <ChevronRight />
               </Button>
-              <Button onClick={checkUpdate}>
-                <RotateCcw />
+              <Button onClick={checkUpdate} disabled={checkingUpdate || installingUpdate}>
+                {checkingUpdate ? <Spinner /> : <RotateCcw />}
                 <span>
                   <strong>{copy.checkUpdate}</strong>
                   <small>{updateMessage || platformInfo?.appVersion || "v0.1.0"}</small>
                 </span>
                 <ChevronRight />
               </Button>
+              {availableUpdate && (
+                <div className="update-install-row">
+                  <Button
+                    className="button button-primary"
+                    disabled={installingUpdate}
+                    onClick={() => void installUpdate()}
+                  >
+                    {installingUpdate ? <Spinner /> : <RotateCcw />}
+                    {installingUpdate
+                      ? store.locale === "zh-CN"
+                        ? `正在安装 ${updateProgress}%`
+                        : `Installing ${updateProgress}%`
+                      : store.locale === "zh-CN"
+                        ? `下载并安装 ${availableUpdate}`
+                        : `Download and install ${availableUpdate}`}
+                  </Button>
+                  {installingUpdate && <Progress value={updateProgress} />}
+                </div>
+              )}
               <div className="about-line">
                 <span>
                   {copy.brand} · {copy.console}
@@ -3325,8 +3398,8 @@ function SettingsView() {
 function LoginView() {
   const store = useProductStore()
   const copy = useCopy(store.locale)
-  const [username, setUsername] = useState("admin")
-  const [password, setPassword] = useState("admin123")
+  const [username, setUsername] = useState(isRemoteApi ? "" : "admin")
+  const [password, setPassword] = useState(isRemoteApi ? "" : "admin123")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const submit = async (event: React.FormEvent) => {
@@ -3360,8 +3433,8 @@ function LoginView() {
             <i />
             {copy.live}
           </span>
-          <span>6 UAV</span>
-          <span>3 POD</span>
+          <span>{isRemoteApi ? "API v1" : "6 UAV"}</span>
+          <span>{isRemoteApi ? "SSE" : "3 POD"}</span>
         </div>
       </section>
       <section className="login-form-panel">
@@ -3397,7 +3470,13 @@ function LoginView() {
               {copy.login}
             </PendingLabel>
           </Button>
-          <small>{copy.loginDemo}</small>
+          <small>
+            {isRemoteApi
+              ? store.locale === "zh-CN"
+                ? "请使用已授权的员工账号登录"
+                : "Sign in with an authorized staff account"
+              : copy.loginDemo}
+          </small>
         </form>
         <footer>© 2026 · ZHIYUAN OPERATIONS · v1.0.0</footer>
       </section>

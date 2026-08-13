@@ -5,7 +5,9 @@ description: 智鸢无人机运营平台的本地运行、API、设备模拟器�
 
 # 智鸢运行与部署
 
-智鸢由 Next.js 静态前端、Tauri 桌面壳和 Spring Boot API 组成。默认前端数据模式为 `simulator`；联调和生产使用 `NEXT_PUBLIC_API_MODE=remote`。
+智鸢由 Next.js 静态前端、Tauri 桌面壳和 Spring Boot API 组成。默认前端数据模式为 `remote`；仅在需要脱离后端预览界面时使用 `NEXT_PUBLIC_API_MODE=simulator`。
+
+Remote 模式不会使用演示数据填充尚未完成或失败的请求；全局同步带会明确列出失败模块并支持重试。Tauri 配置签名 updater 后，可在设置页下载并安装新版本。
 
 ## 本地环境
 

@@ -203,6 +203,23 @@
 .app-content {
   margin-inline-start: 13.5rem;
 }
+.sync-strip {
+  margin-inline-start: 13.5rem;
+  border-width: 0 0 var(--rule-thin);
+  border-radius: 0;
+  background: var(--color-paper-2);
+}
+.sync-strip > .button {
+  grid-column: 2;
+  width: fit-content;
+  margin-block-start: var(--space-xs);
+}
+.update-install-row {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-block-end: var(--rule-thin) solid var(--color-rule);
+}
 .product-page {
   width: min(100%, 100rem);
   min-height: calc(100dvh - 4.5rem);
@@ -1394,6 +1411,9 @@ select:focus-visible {
     display: none;
   }
   .app-content {
+    margin-inline-start: 0;
+  }
+  .sync-strip {
     margin-inline-start: 0;
   }
   .product-page {

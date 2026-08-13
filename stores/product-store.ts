@@ -40,6 +40,8 @@ interface ProductState {
   staff: Staff | null
   authenticated: boolean
   realtimeState: "live" | "reconnecting" | "offline"
+  dataSyncPending: boolean
+  dataSyncErrors: string[]
   selectedUavId: number
   uavs: typeof seedUavs
   alerts: Alert[]
@@ -97,18 +99,20 @@ export const useProductStore = create<ProductState>((set, get) => ({
   staff: remoteMode ? null : demoStaff,
   authenticated: !remoteMode,
   realtimeState: remoteMode ? "offline" : "live",
+  dataSyncPending: remoteMode,
+  dataSyncErrors: [],
   selectedUavId: 1,
-  uavs: seedUavs,
-  alerts: seedAlerts,
+  uavs: remoteMode ? [] : seedUavs,
+  alerts: remoteMode ? [] : seedAlerts,
   auditLogs: remoteMode ? [] : seedAuditLogs,
   flightLogs: remoteMode ? [] : seedFlightLogs,
-  commands: seedCommands,
-  users: seedUsers,
-  goods: seedGoods,
-  orders: seedOrders,
-  tasks: seedTasks,
-  pods: seedPods,
-  bindings: seedBindings,
+  commands: remoteMode ? [] : seedCommands,
+  users: remoteMode ? [] : seedUsers,
+  goods: remoteMode ? [] : seedGoods,
+  orders: remoteMode ? [] : seedOrders,
+  tasks: remoteMode ? [] : seedTasks,
+  pods: remoteMode ? [] : seedPods,
+  bindings: remoteMode ? [] : seedBindings,
   setLocale: (locale) => set({ locale }),
   setSelectedUav: (selectedUavId) => set({ selectedUavId }),
   login: (username, password) => {
@@ -123,6 +127,8 @@ export const useProductStore = create<ProductState>((set, get) => ({
       ...(remoteMode
         ? {
             realtimeState: "offline" as const,
+            dataSyncPending: false,
+            dataSyncErrors: [],
             selectedUavId: 1,
             uavs: [],
             alerts: [],
@@ -561,5 +567,25 @@ export const useProductStore = create<ProductState>((set, get) => ({
       : { ...get().pods.find((pod) => pod.id === id)!, doorStatus, uavId }
     set((state) => ({ pods: state.pods.map((pod) => (pod.id === id ? saved : pod)) }))
   },
-  clearNonAuthCache: () => set({ selectedUavId: 1 }),
+  clearNonAuthCache: () =>
+    set(
+      remoteMode
+        ? {
+            selectedUavId: 1,
+            dataSyncPending: true,
+            dataSyncErrors: [],
+            uavs: [],
+            alerts: [],
+            auditLogs: [],
+            flightLogs: [],
+            commands: [],
+            users: [],
+            goods: [],
+            orders: [],
+            tasks: [],
+            pods: [],
+            bindings: [],
+          }
+        : { selectedUavId: 1 }
+    ),
 }))

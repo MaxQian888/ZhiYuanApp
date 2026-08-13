@@ -7,6 +7,7 @@ import { api, isSessionRecoverySuppressed, streamTelemetry } from "@/lib/api/cli
 import { alertSchema, commandSchema, taskSchema, uavSchema } from "@/lib/api/schemas"
 import { useProductStore } from "@/stores/product-store"
 import { isRemoteApi } from "@/lib/env"
+import { deriveDataSyncState, syncResourceKeys } from "@/lib/sync-state"
 
 const remoteMode = isRemoteApi
 
@@ -37,10 +38,23 @@ export function RemoteDataBridge() {
     if (!remoteMode) return
     const [session, uavs, alerts, pods, bindings, users, goods, orders, tasks, commands] = results
     if (!authenticated && session.isSuccess) {
-      useProductStore.setState({ authenticated: true, staff: session.data })
+      useProductStore.setState({
+        authenticated: true,
+        staff: session.data,
+        dataSyncPending: true,
+      })
     }
     if (!authenticated) return
+    const dataSync = deriveDataSyncState(
+      results.slice(1).map((result, index) => ({
+        key: syncResourceKeys[index],
+        isPending: result.isPending,
+        isError: result.isError,
+      }))
+    )
     useProductStore.setState({
+      dataSyncPending: dataSync.pending,
+      dataSyncErrors: dataSync.failedResources,
       ...(uavs.data ? { uavs: uavs.data } : {}),
       ...(alerts.data ? { alerts: alerts.data } : {}),
       ...(pods.data ? { pods: pods.data } : {}),
