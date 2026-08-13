@@ -52,8 +52,22 @@ public class UavController {
         long operatorId = authentication == null ? 1 : Long.parseLong(authentication.getName());
         store.saveCommand(command, operatorId);
         store.commandStatus(commandId,"SENT");
-        adapter.send(id,body.type()).orTimeout(8,TimeUnit.SECONDS).whenComplete((status,error)->store.commandStatus(commandId,error==null?status:"TIMEOUT"));
+        adapter.send(id,body.type()).orTimeout(8,TimeUnit.SECONDS).whenComplete((status,error)->{
+            String nextStatus=error==null?status:"TIMEOUT";
+            if("ACKNOWLEDGED".equals(nextStatus))store.acknowledgeCommand(commandId,commandEvent(body.type()),body.source()+" · "+commandId);
+            else store.commandStatus(commandId,nextStatus);
+        });
         return ResponseEntity.accepted().body(ApiResponse.accepted(Map.of("commandId",commandId,"status","QUEUED","adapter",adapter.providerName())));
+    }
+
+    private static String commandEvent(String type) {
+        return switch (type) {
+            case "TAKE_OFF" -> "起飞指令";
+            case "LAND" -> "降落指令";
+            case "RETURN_HOME" -> "返航指令";
+            case "STOP" -> "停止任务指令";
+            default -> type;
+        };
     }
 
     @GetMapping("/telemetry/stream")

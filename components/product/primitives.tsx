@@ -74,6 +74,7 @@ export function StatusPill({ value }: { value: string }) {
     "CLOSED",
     "LOW",
     "ENABLED",
+    "RESOLVED",
   ].includes(value)
     ? "success"
     : ["FLYING", "SENT", "DISPATCHING", "DELIVERING", "OPEN", "MID"].includes(value)

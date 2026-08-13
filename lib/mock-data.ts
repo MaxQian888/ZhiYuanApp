@@ -1,5 +1,6 @@
 import type {
   Alert,
+  AuditLog,
   ControlCommand,
   DeviceBinding,
   FlightLog,
@@ -133,6 +134,7 @@ export const seedAlerts: Alert[] = [
     level: "HIGH",
     occurredAt: "2026-08-12T10:21:00+08:00",
     resolved: false,
+    status: "OPEN",
   },
   {
     id: 2,
@@ -141,13 +143,16 @@ export const seedAlerts: Alert[] = [
     level: "MID",
     occurredAt: "2026-08-12T09:47:00+08:00",
     resolved: false,
+    status: "OPEN",
   },
   {
     id: 3,
+    podId: 3,
     title: "3 号休眠仓舱门异常",
     level: "LOW",
     occurredAt: "2026-08-11T18:30:00+08:00",
     resolved: false,
+    status: "OPEN",
   },
 ]
 export const seedFlightLogs: FlightLog[] = [
@@ -156,6 +161,8 @@ export const seedFlightLogs: FlightLog[] = [
     uavId: 2,
     event: "任务起飞",
     detail: "订单 ZY-20260812-003",
+    latitude: 31.296,
+    longitude: 120.611,
     occurredAt: "2026-08-12T10:03:00+08:00",
   },
   {
@@ -163,6 +170,8 @@ export const seedFlightLogs: FlightLog[] = [
     uavId: 1,
     event: "遥测同步",
     detail: "高度 30m，速度 5.2m/s",
+    latitude: 32.052,
+    longitude: 118.765,
     occurredAt: "2026-08-12T10:01:00+08:00",
   },
   {
@@ -170,6 +179,8 @@ export const seedFlightLogs: FlightLog[] = [
     uavId: 3,
     event: "进入充电",
     detail: "休眠仓 POD-03",
+    latitude: 31.231,
+    longitude: 121.472,
     occurredAt: "2026-08-12T09:56:00+08:00",
   },
 ]
@@ -200,6 +211,30 @@ export const seedCommands: ControlCommand[] = [
     createdAt: "2026-08-12T10:24:00+08:00",
   },
 ]
+export const seedAuditLogs: AuditLog[] = [
+  ...seedCommands.map((command) => ({
+    id: `C-${command.id}`,
+    category: command.source === "VOICE" ? ("VOICE" as const) : ("CONTROL" as const),
+    uavId: command.uavId,
+    title: command.type,
+    detail: command.transcript ?? command.status,
+    status: command.status,
+    source: command.source,
+    operatorId: 1,
+    operatorName: "陈屿",
+    occurredAt: command.createdAt,
+  })),
+  ...seedFlightLogs.map((log) => ({
+    id: `F-${log.id}`,
+    category: "FLIGHT" as const,
+    uavId: log.uavId,
+    title: log.event,
+    detail: log.detail,
+    status: "RECORDED",
+    source: "UAV",
+    occurredAt: log.occurredAt,
+  })),
+].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
 export const seedUsers: ManagedUser[] = [
   {
     id: 1,

@@ -9,6 +9,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import jakarta.servlet.http.Cookie;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -16,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -188,5 +190,61 @@ class ApplicationContextTest {
         mvc.perform(delete("/api/v1/goods/4").header("Authorization", "Bearer " + managerAccess))
             .andExpect(status().isForbidden())
             .andExpect(jsonPath("$.message").value("Insufficient permission"));
+    }
+
+    @Test
+    void auditLogsAndAlertLifecycleRemainTraceable() throws Exception {
+        String login = mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                .content("{\"username\":\"admin\",\"password\":\"admin123\"}"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String access = JsonPath.read(login, "$.data.accessToken");
+
+        mvc.perform(post("/api/v1/uavs/1/commands").header("Authorization", "Bearer " + access)
+                .contentType("application/json")
+                .content("{\"type\":\"RETURN_HOME\",\"source\":\"VOICE\",\"transcript\":\"无人机一号返航\"}"))
+            .andExpect(status().isAccepted());
+        mvc.perform(post("/api/v1/uavs/1/commands").header("Authorization", "Bearer " + access)
+                .contentType("application/json")
+                .content("{\"type\":\"LAND\",\"source\":\"VOICE\",\"transcript\":\"无人机一号降落\"}"))
+            .andExpect(status().isAccepted());
+
+        mvc.perform(get("/api/v1/logs").header("Authorization", "Bearer " + access)
+                .param("type", "VOICE").param("page", "1").param("size", "20"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.items[0].category").value("VOICE"))
+            .andExpect(jsonPath("$.data.items[0].operatorName").isNotEmpty())
+            .andExpect(jsonPath("$.data.total").isNumber());
+
+        String firstPage = mvc.perform(get("/api/v1/logs").header("Authorization", "Bearer " + access)
+                .param("type", "VOICE").param("page", "1").param("size", "1"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String secondPage = mvc.perform(get("/api/v1/logs").header("Authorization", "Bearer " + access)
+                .param("type", "VOICE").param("page", "2").param("size", "1"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertNotEquals((String) JsonPath.read(firstPage, "$.data.items[0].id"),
+            (String) JsonPath.read(secondPage, "$.data.items[0].id"));
+
+        mvc.perform(get("/api/v1/logs").header("Authorization", "Bearer " + access)
+                .param("page", String.valueOf(Integer.MAX_VALUE)).param("size", "100"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.items").isEmpty());
+
+        mvc.perform(patch("/api/v1/alerts/3/acknowledge")
+                .header("Authorization", "Bearer " + access))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("ACKNOWLEDGED"))
+            .andExpect(jsonPath("$.data.acknowledgedBy").value(1))
+            .andExpect(jsonPath("$.data.acknowledgedAt").isNotEmpty());
+
+        mvc.perform(patch("/api/v1/alerts/3/acknowledge")
+                .header("Authorization", "Bearer " + access))
+            .andExpect(status().isConflict());
+
+        mvc.perform(patch("/api/v1/alerts/3/resolve")
+                .header("Authorization", "Bearer " + access))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("RESOLVED"))
+            .andExpect(jsonPath("$.data.resolvedBy").value(1))
+            .andExpect(jsonPath("$.data.resolvedAt").isNotEmpty());
     }
 }

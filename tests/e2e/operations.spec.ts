@@ -59,6 +59,21 @@ test("mobile layout has no horizontal overflow and keeps bottom navigation usabl
   await expect(page.getByRole("link", { name: /首页|Home/ })).toBeVisible()
 })
 
+test("map zoom and centering transform the real UAV track viewport", async ({ page }) => {
+  await page.goto("/map?id=1")
+  const track = page.locator(".test-map svg polyline")
+  await expect(track).toBeVisible()
+  const initialTrack = await track.getAttribute("points")
+  const marker = page.locator(".map-marker")
+  const initialPosition = await marker.getAttribute("style")
+
+  await page.getByRole("button", { name: /放大|Zoom in/ }).click()
+  await expect.poll(() => track.getAttribute("points")).not.toBe(initialTrack)
+
+  await page.getByRole("button", { name: /定位设备|Center device/ }).click()
+  await expect.poll(() => marker.getAttribute("style")).not.toBe(initialPosition)
+})
+
 test("fleet and goods filters update the visible records", async ({ page }) => {
   await page.goto("/uavs")
   await page.getByRole("combobox", { name: /区域|Region/ }).selectOption("苏州")
@@ -136,6 +151,26 @@ test("failed delivery tasks require and retain an operator reason", async ({ pag
     .last()
     .click()
   await expect(page.getByText("侧风超过安全阈值")).toBeVisible()
+})
+
+test("alerts follow acknowledge and resolve lifecycle while audit logs stay filterable", async ({
+  page,
+}) => {
+  await page.goto("/alerts")
+  await page.getByRole("combobox", { name: /告警等级|Severity/ }).selectOption("HIGH")
+  const alertRows = page.locator(".data-table .table-row")
+  await expect(alertRows).toHaveCount(1)
+  await alertRows.getByRole("button", { name: /确认|Acknowledge/ }).click()
+  await expect(alertRows).toContainText("ACKNOWLEDGED")
+  await alertRows.getByRole("button", { name: /解除|Resolve/ }).click()
+  await expect(alertRows).toContainText("RESOLVED")
+
+  await page.goto("/logs")
+  await page.getByRole("tab", { name: /语音|Voice/ }).click()
+  await expect(page.locator(".timeline > div")).toHaveCount(1)
+  await expect(page.locator(".timeline")).toContainText("无人机二号返航")
+  await page.getByRole("searchbox", { name: /搜索日志|Search logs/ }).fill("不存在")
+  await expect(page.locator(".timeline > div")).toHaveCount(0)
 })
 
 test("administrators can create and disable staff accounts", async ({ page }) => {

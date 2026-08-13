@@ -20,7 +20,7 @@ cd .. && NEXT_PUBLIC_API_MODE=remote pnpm dev
 
 ## API 与实时事件
 
-API 使用 `{ code, message, data, traceId }` 信封，分页使用 `{ items, page, size, total, totalPages }`。入口包括 `/api/v1/auth`、`admins`、`dashboard`、`search`、`uavs`、`alerts`、`pods`、`device-bindings`、`users`、`goods`、`orders`、`tasks` 与 `system`。仅 `admin` 可创建、编辑、停用和重新启用员工账号；停用或重置密码会立即撤销该员工的活动会话。
+API 使用 `{ code, message, data, traceId }` 信封，分页使用 `{ items, page, size, total, totalPages }`。入口包括 `/api/v1/auth`、`admins`、`dashboard`、`search`、`uavs`、`alerts`、`logs`、`pods`、`device-bindings`、`users`、`goods`、`orders`、`tasks` 与 `system`。`/api/v1/logs` 在数据库侧过滤并分页飞行、控制和语音审计记录；告警按 `OPEN → ACKNOWLEDGED → RESOLVED` 流转并记录处理员工与时间。仅 `admin` 可创建、编辑、停用和重新启用员工账号；停用或重置密码会立即撤销该员工的活动会话。
 
 指令接口返回 HTTP 202 与 `commandId`。状态为 `QUEUED → SENT → ACKNOWLEDGED`，失败为 `FAILED` 或 `TIMEOUT`。`/api/v1/uavs/telemetry/stream` 使用 SSE，事件名固定为 `telemetry` 与 `heartbeat`；客户端断线后指数退避重连并重新获取快照。
 

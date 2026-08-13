@@ -13,10 +13,16 @@ public final class Models {
     public record Uav(long id, String code, String name, String rfidTag, String model, String ownerName,
                       String status, int battery, boolean inHibernatePod, String region, double altitude,
                       double speed, double latitude, double longitude, OffsetDateTime updatedAt) {}
-    public record Alert(long id, Long uavId, String title, String level, OffsetDateTime occurredAt, boolean resolved) {}
-    public record FlightLog(long id, long uavId, String event, String detail, OffsetDateTime occurredAt) {}
+    public record Alert(long id, Long uavId, Long podId, String title, String level, OffsetDateTime occurredAt,
+                        boolean resolved, String status, Long acknowledgedBy,
+                        OffsetDateTime acknowledgedAt, Long resolvedBy, OffsetDateTime resolvedAt) {}
+    public record FlightLog(long id, long uavId, String event, String detail, Double latitude,
+                            Double longitude, OffsetDateTime occurredAt) {}
     public record ControlCommand(String id, long uavId, String type, String status, String source,
                                  String transcript, OffsetDateTime createdAt) {}
+    public record AuditLog(String id, String category, Long uavId, String title, String detail,
+                           String status, String source, Long operatorId, String operatorName,
+                           OffsetDateTime occurredAt) {}
     public record Address(long id, long userId, String receiverName, String receiverPhone, String detail,
                           double latitude, double longitude, boolean isDefault) {}
     public record User(long id, String username, String phone, OffsetDateTime createdAt, List<Address> addresses) {}

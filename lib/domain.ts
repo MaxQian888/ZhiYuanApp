@@ -11,6 +11,8 @@ export type OrderStatus =
   | "ERROR"
 export type TaskStatus = "WAITING" | "FLYING" | "ARRIVED" | "FAILED"
 export type AlertLevel = "HIGH" | "MID" | "LOW"
+export type AlertStatus = "OPEN" | "ACKNOWLEDGED" | "RESOLVED"
+export type AuditLogCategory = "FLIGHT" | "CONTROL" | "VOICE"
 
 export interface Staff {
   id: number
@@ -45,10 +47,29 @@ export interface Uav {
 export interface Alert {
   id: number
   uavId?: number
+  podId?: number
   title: string
   level: AlertLevel
   occurredAt: string
   resolved: boolean
+  status: AlertStatus
+  acknowledgedBy?: number
+  acknowledgedAt?: string
+  resolvedBy?: number
+  resolvedAt?: string
+}
+
+export interface AuditLog {
+  id: string
+  category: AuditLogCategory
+  uavId?: number
+  title: string
+  detail: string
+  status: string
+  source: string
+  operatorId?: number
+  operatorName?: string
+  occurredAt: string
 }
 
 export interface FlightLog {
@@ -56,6 +77,8 @@ export interface FlightLog {
   uavId: number
   event: string
   detail: string
+  latitude?: number
+  longitude?: number
   occurredAt: string
 }
 

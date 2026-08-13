@@ -1,6 +1,6 @@
 "use client"
 
-import { useQueries } from "@tanstack/react-query"
+import { useQueries, useQueryClient } from "@tanstack/react-query"
 import { useEffect } from "react"
 import { z } from "zod"
 import { api, isSessionRecoverySuppressed, streamTelemetry } from "@/lib/api/client"
@@ -12,6 +12,7 @@ const remoteMode = isRemoteApi
 
 export function RemoteDataBridge() {
   const authenticated = useProductStore((state) => state.authenticated)
+  const queryClient = useQueryClient()
   const results = useQueries({
     queries: [
       {
@@ -21,7 +22,7 @@ export function RemoteDataBridge() {
         retry: false,
       },
       { queryKey: ["uavs"], queryFn: api.allUavs, enabled: remoteMode && authenticated },
-      { queryKey: ["alerts"], queryFn: api.alerts, enabled: remoteMode && authenticated },
+      { queryKey: ["alerts"], queryFn: () => api.alerts(), enabled: remoteMode && authenticated },
       { queryKey: ["pods"], queryFn: api.pods, enabled: remoteMode && authenticated },
       { queryKey: ["bindings"], queryFn: api.bindings, enabled: remoteMode && authenticated },
       { queryKey: ["users"], queryFn: api.allUsers, enabled: remoteMode && authenticated },
@@ -66,13 +67,30 @@ export function RemoteDataBridge() {
         if (!(event.event in schemas)) return
         const [schema, key] = schemas[event.event as keyof typeof schemas]
         const parsed = z.array(schema).safeParse(event.data)
-        if (parsed.success) useProductStore.setState({ [key]: parsed.data })
+        if (parsed.success) {
+          useProductStore.setState({ [key]: parsed.data })
+          if (event.event === "command-status") {
+            const commands = parsed.data as z.infer<typeof commandSchema>[]
+            useProductStore.setState((state) => ({
+              auditLogs: state.auditLogs.map((log) => {
+                const command = commands.find((item) => `C-${item.id}` === log.id)
+                return command ? { ...log, status: command.status } : log
+              }),
+            }))
+            void queryClient.invalidateQueries({ queryKey: ["audit-logs-page"] })
+            void queryClient.invalidateQueries({ queryKey: ["flight-logs"] })
+          }
+          if (event.event === "task-status") {
+            void queryClient.invalidateQueries({ queryKey: ["audit-logs-page"] })
+            void queryClient.invalidateQueries({ queryKey: ["flight-logs"] })
+          }
+        }
       },
       (realtimeState) => useProductStore.setState({ realtimeState }),
       controller.signal
     )
     return () => controller.abort()
-  }, [authenticated])
+  }, [authenticated, queryClient])
 
   return null
 }

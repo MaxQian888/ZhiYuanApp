@@ -29,7 +29,6 @@ public class PlatformDatabase {
     public record Snapshot(
         List<Models.Uav> uavs,
         List<Models.Alert> alerts,
-        List<Models.FlightLog> flightLogs,
         List<Models.ControlCommand> commands,
         List<Models.User> users,
         List<Models.Goods> goods,
@@ -44,7 +43,7 @@ public class PlatformDatabase {
     }
 
     public Snapshot snapshot() {
-        return new Snapshot(loadUavs(), loadAlerts(), loadFlightLogs(), loadCommands(), loadUsers(),
+        return new Snapshot(loadUavs(), loadAlerts(), loadCommands(), loadUsers(),
             loadGoods(), loadOrders(), loadTasks(), loadPods(), loadBindings());
     }
 
@@ -104,8 +103,14 @@ public class PlatformDatabase {
         jdbc.update("UPDATE goods SET status = ? WHERE id = ?", status, id);
     }
 
-    public void resolveAlert(long id) {
-        jdbc.update("UPDATE alerts SET resolved = TRUE, resolved_at = CURRENT_TIMESTAMP WHERE id = ?", id);
+    public boolean acknowledgeAlert(long id, long operatorId) {
+        return jdbc.update("UPDATE alerts SET acknowledged_by = ?, acknowledged_at = CURRENT_TIMESTAMP WHERE id = ? AND acknowledged_at IS NULL AND resolved = FALSE",
+            operatorId, id) == 1;
+    }
+
+    public boolean resolveAlert(long id, long operatorId) {
+        return jdbc.update("UPDATE alerts SET resolved = TRUE, resolved_by = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND acknowledged_at IS NOT NULL AND resolved = FALSE",
+            operatorId, id) == 1;
     }
 
     public void updateOrderStatus(long id, String status) {
@@ -167,6 +172,25 @@ public class PlatformDatabase {
         jdbc.update("UPDATE control_commands SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
     }
 
+    public long insertFlightLog(long uavId, String event, String detail, double latitude, double longitude) {
+        return insert("INSERT INTO flight_logs (uav_id, event, detail, latitude, longitude) VALUES (?, ?, ?, ?, ?)",
+            uavId, event, detail, latitude, longitude);
+    }
+
+    public Models.FlightLog flightLog(long id) {
+        return jdbc.queryForObject("SELECT * FROM flight_logs WHERE id = ?", (rs, row) -> new Models.FlightLog(
+            rs.getLong("id"), rs.getLong("uav_id"), rs.getString("event"), rs.getString("detail"),
+            nullableDouble(rs.getObject("latitude")), nullableDouble(rs.getObject("longitude")),
+            offset(rs.getTimestamp("occurred_at"))), id);
+    }
+
+    public List<Models.FlightLog> flightLogs(long uavId) {
+        return jdbc.query("SELECT * FROM flight_logs WHERE uav_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 200",
+            (rs, row) -> new Models.FlightLog(rs.getLong("id"), rs.getLong("uav_id"),
+                rs.getString("event"), rs.getString("detail"), nullableDouble(rs.getObject("latitude")),
+                nullableDouble(rs.getObject("longitude")), offset(rs.getTimestamp("occurred_at"))), uavId);
+    }
+
     public long staffId(String username) {
         Long id = jdbc.queryForObject("SELECT id FROM admins WHERE username = ?", Long.class, username);
         return id == null ? 1 : id;
@@ -182,18 +206,61 @@ public class PlatformDatabase {
 
     private List<Models.Alert> loadAlerts() {
         return jdbc.query("SELECT * FROM alerts ORDER BY id", (rs, row) -> new Models.Alert(
-            rs.getLong("id"), nullableLong(rs.getObject("uav_id")), rs.getString("title"), rs.getString("level"),
-            offset(rs.getTimestamp("occurred_at")), rs.getBoolean("resolved")));
+            rs.getLong("id"), nullableLong(rs.getObject("uav_id")), nullableLong(rs.getObject("pod_id")),
+            rs.getString("title"), rs.getString("level"),
+            offset(rs.getTimestamp("occurred_at")), rs.getBoolean("resolved"),
+            rs.getBoolean("resolved") ? "RESOLVED" : rs.getTimestamp("acknowledged_at") == null ? "OPEN" : "ACKNOWLEDGED",
+            nullableLong(rs.getObject("acknowledged_by")), offset(rs.getTimestamp("acknowledged_at")),
+            nullableLong(rs.getObject("resolved_by")), offset(rs.getTimestamp("resolved_at"))));
     }
 
-    private List<Models.FlightLog> loadFlightLogs() {
-        return jdbc.query("SELECT * FROM flight_logs ORDER BY id", (rs, row) -> new Models.FlightLog(
-            rs.getLong("id"), rs.getLong("uav_id"), rs.getString("event"), rs.getString("detail"),
-            offset(rs.getTimestamp("occurred_at"))));
+    public long countAuditLogs(String type, String status, Long uavId, String query) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM (" + auditUnion() + ") audit WHERE " +
+            auditFilters(), Long.class, auditValues(type, status, uavId, query).toArray());
+        return count == null ? 0 : count;
+    }
+
+    public List<Models.AuditLog> auditLogs(String type, String status, Long uavId, String query,
+                                           long offset, int size) {
+        int safeSize = Math.min(Math.max(1, size), 100);
+        return auditRows(type, status, uavId, query, true, offset, safeSize);
+    }
+
+    private List<Models.AuditLog> auditRows(String type, String status, Long uavId, String query,
+                                            boolean paged, long offset, int size) {
+        String sql = "SELECT * FROM (" + auditUnion() + ") audit WHERE " + auditFilters() + " ORDER BY occurred_at DESC, id DESC" +
+            (paged ? " LIMIT ? OFFSET ?" : "");
+        List<Object> values = auditValues(type, status, uavId, query);
+        if (paged) { values.add(size); values.add(offset); }
+        return jdbc.query(sql, (rs, row) -> new Models.AuditLog(
+            rs.getString("id"), rs.getString("category"), nullableLong(rs.getObject("uav_id")),
+            rs.getString("title"), rs.getString("detail"), rs.getString("status"),
+            rs.getString("source"), nullableLong(rs.getObject("operator_id")), rs.getString("operator_name"),
+            offset(rs.getTimestamp("occurred_at"))), values.toArray());
+    }
+
+    private static String auditUnion() {
+        return "SELECT CONCAT('F-', f.id) id, 'FLIGHT' category, f.uav_id, f.event title, f.detail, 'RECORDED' status, 'UAV' source, NULL operator_id, NULL operator_name, f.occurred_at FROM flight_logs f " +
+            "UNION ALL " +
+            "SELECT CONCAT('C-', c.id), CASE WHEN c.source = 'VOICE' THEN 'VOICE' ELSE 'CONTROL' END, c.uav_id, c.type, COALESCE(NULLIF(c.transcript, ''), c.status), c.status, c.source, c.operator_id, a.display_name, c.created_at FROM control_commands c JOIN admins a ON a.id = c.operator_id";
+    }
+
+    private static String auditFilters() {
+        return "(? = '' OR category = ?) AND (? = '' OR status = ?) AND (? IS NULL OR uav_id = ?) AND (? = '' OR LOWER(CONCAT(title, ' ', detail, ' ', COALESCE(operator_name, ''))) LIKE ?)";
+    }
+
+    private static List<Object> auditValues(String type, String status, Long uavId, String query) {
+        String normalizedType = type == null ? "" : type;
+        String normalizedStatus = status == null ? "" : status;
+        String normalizedQuery = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+        List<Object> values = new ArrayList<>();
+        java.util.Collections.addAll(values, normalizedType, normalizedType, normalizedStatus,
+            normalizedStatus, uavId, uavId, normalizedQuery, "%" + normalizedQuery + "%");
+        return values;
     }
 
     private List<Models.ControlCommand> loadCommands() {
-        return jdbc.query("SELECT * FROM control_commands ORDER BY created_at DESC", (rs, row) -> new Models.ControlCommand(
+        return jdbc.query("SELECT * FROM control_commands ORDER BY created_at DESC, id DESC LIMIT 500", (rs, row) -> new Models.ControlCommand(
             rs.getString("id"), rs.getLong("uav_id"), rs.getString("type"), rs.getString("status"),
             rs.getString("source"), rs.getString("transcript"), offset(rs.getTimestamp("created_at"))));
     }
@@ -276,6 +343,10 @@ public class PlatformDatabase {
 
     private static Long nullableLong(Object value) {
         return value == null ? null : ((Number) value).longValue();
+    }
+
+    private static Double nullableDouble(Object value) {
+        return value == null ? null : ((Number) value).doubleValue();
     }
 
     private String json(Object value) {

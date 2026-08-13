@@ -2,6 +2,7 @@ import { z } from "zod"
 import { clearRefreshToken, isTauri, loadRefreshToken, saveRefreshToken } from "@/lib/tauri"
 import {
   alertSchema,
+  auditLogSchema,
   addressSchema,
   bindingSchema,
   commandSchema,
@@ -213,9 +214,16 @@ export const api = {
   commands: () => apiRequest("/api/v1/uavs/commands", z.array(commandSchema)),
   flightLogs: (id: number) =>
     apiRequest(`/api/v1/uavs/${id}/flight-logs`, z.array(flightLogSchema)),
-  alerts: () => apiRequest("/api/v1/alerts", z.array(alertSchema)),
+  alerts: (level = "") =>
+    apiRequest(
+      `/api/v1/alerts${level ? `?level=${encodeURIComponent(level)}` : ""}`,
+      z.array(alertSchema)
+    ),
+  acknowledgeAlert: (id: number) =>
+    apiRequest(`/api/v1/alerts/${id}/acknowledge`, alertSchema, { method: "PATCH" }),
   resolveAlert: (id: number) =>
     apiRequest(`/api/v1/alerts/${id}/resolve`, alertSchema, { method: "PATCH" }),
+  auditLogs: (query = "") => apiRequest(`/api/v1/logs${query}`, pageSchema(auditLogSchema)),
   pods: () => apiRequest("/api/v1/pods", z.array(podSchema)),
   updatePod: (id: number, doorStatus: string, uavId?: number) =>
     apiRequest(`/api/v1/pods/${id}`, podSchema, {

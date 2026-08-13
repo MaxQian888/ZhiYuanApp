@@ -35,16 +35,36 @@ export const uavSchema = z.object({
 export const alertSchema = z.object({
   id: z.number().int().positive(),
   uavId: z.number().int().positive().optional(),
+  podId: z.number().int().positive().optional(),
   title: z.string(),
   level: z.enum(["HIGH", "MID", "LOW"]),
   occurredAt: dateTime,
   resolved: z.boolean(),
+  status: z.enum(["OPEN", "ACKNOWLEDGED", "RESOLVED"]),
+  acknowledgedBy: z.number().int().positive().optional(),
+  acknowledgedAt: dateTime.optional(),
+  resolvedBy: z.number().int().positive().optional(),
+  resolvedAt: dateTime.optional(),
+})
+export const auditLogSchema = z.object({
+  id: z.string(),
+  category: z.enum(["FLIGHT", "CONTROL", "VOICE"]),
+  uavId: z.number().int().positive().optional(),
+  title: z.string(),
+  detail: z.string(),
+  status: z.string(),
+  source: z.string(),
+  operatorId: z.number().int().positive().optional(),
+  operatorName: z.string().optional(),
+  occurredAt: dateTime,
 })
 export const flightLogSchema = z.object({
   id: z.number().int().positive(),
   uavId: z.number().int().positive(),
   event: z.string(),
   detail: z.string(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
   occurredAt: dateTime,
 })
 export const commandSchema = z.object({

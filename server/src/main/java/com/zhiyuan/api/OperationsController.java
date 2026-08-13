@@ -3,7 +3,10 @@ package com.zhiyuan.api;
 import com.zhiyuan.domain.Models;
 import com.zhiyuan.service.PlatformStore;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,7 +33,15 @@ public class OperationsController {
     @GetMapping("/dashboard") public ApiResponse<Models.Dashboard> dashboard(){return ApiResponse.ok(store.dashboard());}
     @GetMapping("/search") public ApiResponse<List<java.util.Map<String,Object>>> search(@RequestParam String q){return ApiResponse.ok(store.search(q));}
     @GetMapping("/alerts") public ApiResponse<List<Models.Alert>> alerts(@RequestParam(defaultValue="") String level){return ApiResponse.ok(store.alerts(level));}
-    @PatchMapping("/alerts/{id}/resolve") public ApiResponse<Models.Alert> resolve(@PathVariable long id){return ApiResponse.ok(store.resolveAlert(id));}
+    @PatchMapping("/alerts/{id}/acknowledge") public ApiResponse<Models.Alert> acknowledge(Authentication authentication,@PathVariable long id){return ApiResponse.ok(store.acknowledgeAlert(id,staffId(authentication)));}
+    @PatchMapping("/alerts/{id}/resolve") public ApiResponse<Models.Alert> resolve(Authentication authentication,@PathVariable long id){return ApiResponse.ok(store.resolveAlert(id,staffId(authentication)));}
+    @GetMapping("/logs") public ApiResponse<PageResponse<Models.AuditLog>> logs(
+        @RequestParam(defaultValue="") @Pattern(regexp="|FLIGHT|CONTROL|VOICE") String type,
+        @RequestParam(defaultValue="") @Pattern(regexp="|RECORDED|QUEUED|SENT|ACKNOWLEDGED|FAILED|TIMEOUT") String status,
+        @RequestParam(required=false) @Positive Long uavId,
+        @RequestParam(defaultValue="") String q,
+        @RequestParam(defaultValue="1") @Positive int page,
+        @RequestParam(defaultValue="20") @Positive @Max(100) int size){PlatformStore.AuditPage result=store.auditLogs(type,status,uavId,q,page,size);return ApiResponse.ok(new PageResponse<>(result.items(),result.page(),result.size(),result.total(),result.totalPages()));}
     @GetMapping("/pods") public ApiResponse<List<Models.Pod>> pods(){return ApiResponse.ok(store.pods());}
     @PatchMapping("/pods/{id}") public ApiResponse<Models.Pod> pod(@PathVariable long id,@Valid @RequestBody PodRequest body){return ApiResponse.ok(store.updatePod(id,body.doorStatus(),body.uavId()));}
     @GetMapping("/device-bindings") public ApiResponse<List<Models.Binding>> bindings(Authentication authentication){long staffId=staffId(authentication);return ApiResponse.ok(isAdmin(authentication)?store.bindings():store.bindings().stream().filter(binding->binding.staffId()==staffId).toList());}

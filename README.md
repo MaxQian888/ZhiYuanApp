@@ -40,6 +40,8 @@ NEXT_PUBLIC_API_URL=http://localhost:8080
 
 所有路由均可静态导出；运行时数据直接请求 `/api/v1/**`，不依赖 Next Route Handler、Server Action 或未知动态参数。
 
+审计日志通过 `/api/v1/logs` 在数据库侧完成类型、状态、设备与关键词过滤及分页，统一返回飞行、控制和语音记录。告警采用 `OPEN → ACKNOWLEDGED → RESOLVED` 生命周期，确认与解除分别记录员工及时间，不能跳过确认直接解除。
+
 ## 验证
 
 ```bash

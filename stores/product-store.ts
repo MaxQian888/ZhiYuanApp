@@ -3,6 +3,7 @@
 import { create } from "zustand"
 import type {
   Alert,
+  AuditLog,
   CommandType,
   ControlCommand,
   Goods,
@@ -20,6 +21,7 @@ import { isRemoteApi } from "@/lib/env"
 import {
   demoStaff,
   seedAlerts,
+  seedAuditLogs,
   seedBindings,
   seedCommands,
   seedFlightLogs,
@@ -41,6 +43,7 @@ interface ProductState {
   selectedUavId: number
   uavs: typeof seedUavs
   alerts: Alert[]
+  auditLogs: AuditLog[]
   flightLogs: typeof seedFlightLogs
   commands: ControlCommand[]
   users: ManagedUser[]
@@ -60,6 +63,7 @@ interface ProductState {
     source: "MANUAL" | "VOICE",
     transcript?: string
   ) => Promise<string>
+  acknowledgeAlert: (id: number) => Promise<void>
   resolveAlert: (id: number) => Promise<void>
   saveUser: (
     user: Omit<ManagedUser, "id" | "createdAt" | "addresses"> & { id?: number }
@@ -96,7 +100,8 @@ export const useProductStore = create<ProductState>((set, get) => ({
   selectedUavId: 1,
   uavs: seedUavs,
   alerts: seedAlerts,
-  flightLogs: seedFlightLogs,
+  auditLogs: remoteMode ? [] : seedAuditLogs,
+  flightLogs: remoteMode ? [] : seedFlightLogs,
   commands: seedCommands,
   users: seedUsers,
   goods: seedGoods,
@@ -121,6 +126,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
             selectedUavId: 1,
             uavs: [],
             alerts: [],
+            auditLogs: [],
             flightLogs: [],
             commands: [],
             users: [],
@@ -157,7 +163,22 @@ export const useProductStore = create<ProductState>((set, get) => ({
         status: result.status,
         createdAt: new Date().toISOString(),
       }
-      set((state) => ({ commands: [command, ...state.commands] }))
+      const auditLog: AuditLog = {
+        id: `C-${command.id}`,
+        category: source === "VOICE" ? "VOICE" : "CONTROL",
+        uavId,
+        title: type,
+        detail: transcript ?? command.status,
+        status: command.status,
+        source,
+        operatorId: get().staff?.id,
+        operatorName: get().staff?.displayName,
+        occurredAt: command.createdAt,
+      }
+      set((state) => ({
+        commands: [command, ...state.commands],
+        auditLogs: [auditLog, ...state.auditLogs],
+      }))
       return result.commandId
     }
     const id = `cmd-${Date.now()}`
@@ -170,13 +191,31 @@ export const useProductStore = create<ProductState>((set, get) => ({
       status: "QUEUED",
       createdAt: new Date().toISOString(),
     }
-    set((state) => ({ commands: [command, ...state.commands] }))
+    const auditLog: AuditLog = {
+      id: `C-${command.id}`,
+      category: source === "VOICE" ? "VOICE" : "CONTROL",
+      uavId,
+      title: type,
+      detail: transcript ?? command.status,
+      status: command.status,
+      source,
+      operatorId: get().staff?.id,
+      operatorName: get().staff?.displayName,
+      occurredAt: command.createdAt,
+    }
+    set((state) => ({
+      commands: [command, ...state.commands],
+      auditLogs: [auditLog, ...state.auditLogs],
+    }))
     if (typeof window !== "undefined") {
       window.setTimeout(
         () =>
           set((state) => ({
             commands: state.commands.map((item) =>
               item.id === id ? { ...item, status: "SENT" } : item
+            ),
+            auditLogs: state.auditLogs.map((item) =>
+              item.id === `C-${id}` ? { ...item, status: "SENT" } : item
             ),
           })),
         350
@@ -187,17 +226,44 @@ export const useProductStore = create<ProductState>((set, get) => ({
             commands: state.commands.map((item) =>
               item.id === id ? { ...item, status: "ACKNOWLEDGED" } : item
             ),
+            auditLogs: state.auditLogs.map((item) =>
+              item.id === `C-${id}` ? { ...item, status: "ACKNOWLEDGED" } : item
+            ),
           })),
         1000
       )
     }
     return id
   },
+  acknowledgeAlert: async (id) => {
+    const acknowledged = remoteMode ? await api.acknowledgeAlert(id) : undefined
+    const staff = get().staff
+    set((state) => ({
+      alerts: state.alerts.map((item) =>
+        item.id === id
+          ? (acknowledged ?? {
+              ...item,
+              status: "ACKNOWLEDGED" as const,
+              acknowledgedBy: staff?.id,
+              acknowledgedAt: new Date().toISOString(),
+            })
+          : item
+      ),
+    }))
+  },
   resolveAlert: async (id) => {
     const resolved = remoteMode ? await api.resolveAlert(id) : undefined
     set((state) => ({
       alerts: state.alerts.map((item) =>
-        item.id === id ? (resolved ?? { ...item, resolved: true }) : item
+        item.id === id
+          ? (resolved ?? {
+              ...item,
+              resolved: true,
+              status: "RESOLVED" as const,
+              resolvedBy: get().staff?.id,
+              resolvedAt: new Date().toISOString(),
+            })
+          : item
       ),
     }))
   },

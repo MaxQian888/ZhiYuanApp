@@ -27,6 +27,7 @@ import java.util.function.Predicate;
 @Service
 public class PlatformStore {
     public record OrderLine(long goodsId, int count) {}
+    public record AuditPage(List<Models.AuditLog> items, int page, int size, long total, int totalPages) {}
     private static final ZoneOffset OFFSET = ZoneOffset.ofHours(8);
     private final Map<Long, Models.Uav> uavs = new ConcurrentHashMap<>();
     private final Map<Long, Models.Alert> alerts = new ConcurrentHashMap<>();
@@ -38,6 +39,7 @@ public class PlatformStore {
     private final Map<Long, Models.Task> tasks = new ConcurrentHashMap<>();
     private final Map<Long, Models.Pod> pods = new ConcurrentHashMap<>();
     private final Map<Long, Models.Binding> bindings = new ConcurrentHashMap<>();
+    private final Map<String, Models.AuditLog> auditLogs = new ConcurrentHashMap<>();
     private final AtomicLong userIds = new AtomicLong(3);
     private final AtomicLong addressIds = new AtomicLong(2);
     private final AtomicLong goodsIds = new AtomicLong(4);
@@ -65,12 +67,16 @@ public class PlatformStore {
         putUav(4,"UAV-04","巡检四号","RFID-0004","DJI Mini 4 Pro","周衡","OFFLINE",0,false,"杭州",0,0,30.27,120.15,now.minusHours(13));
         putUav(5,"UAV-05","配送五号","RFID-0005","DJI Matrice 30","林潇","ONLINE",63,false,"无锡",12,2.4,31.49,120.31,now);
         putUav(6,"UAV-06","备勤六号","RFID-0006","Autel Alpha","周衡","ONLINE",91,false,"南京",0,0,32.07,118.80,now);
-        alerts.put(1L,new Models.Alert(1,2L,"UAV-02 电量低于 45%","HIGH",now.minusMinutes(3),false));
-        alerts.put(2L,new Models.Alert(2,5L,"UAV-05 信号弱","MID",now.minusMinutes(37),false));
-        alerts.put(3L,new Models.Alert(3,null,"3 号休眠仓舱门异常","LOW",now.minusHours(16),false));
-        flightLogs.put(1L,new Models.FlightLog(1,2,"任务起飞","订单 ZY-20260812-003",now.minusMinutes(21)));
-        flightLogs.put(2L,new Models.FlightLog(2,1,"遥测同步","高度 30m，速度 5.2m/s",now.minusMinutes(23)));
-        flightLogs.put(3L,new Models.FlightLog(3,3,"进入充电","休眠仓 POD-03",now.minusMinutes(28)));
+        alerts.put(1L,new Models.Alert(1,2L,null,"UAV-02 电量低于 45%","HIGH",now.minusMinutes(3),false,"OPEN",null,null,null,null));
+        alerts.put(2L,new Models.Alert(2,5L,null,"UAV-05 信号弱","MID",now.minusMinutes(37),false,"OPEN",null,null,null,null));
+        alerts.put(3L,new Models.Alert(3,null,3L,"3 号休眠仓舱门异常","LOW",now.minusHours(16),false,"OPEN",null,null,null,null));
+        flightLogs.put(1L,new Models.FlightLog(1,2,"任务起飞","订单 ZY-20260812-003",31.296,120.611,now.minusMinutes(21)));
+        flightLogs.put(2L,new Models.FlightLog(2,1,"遥测同步","高度 30m，速度 5.2m/s",32.052,118.765,now.minusMinutes(23)));
+        flightLogs.put(3L,new Models.FlightLog(3,3,"进入充电","休眠仓 POD-03",31.231,121.472,now.minusMinutes(28)));
+        auditLogs.put("F-1",new Models.AuditLog("F-1","FLIGHT",2L,"任务起飞","订单 ZY-20260812-003","RECORDED","UAV",null,null,now.minusMinutes(21)));
+        auditLogs.put("F-2",new Models.AuditLog("F-2","FLIGHT",1L,"遥测同步","高度 30m，速度 5.2m/s","RECORDED","UAV",null,null,now.minusMinutes(23)));
+        auditLogs.put("F-3",new Models.AuditLog("F-3","FLIGHT",3L,"进入充电","休眠仓 POD-03","RECORDED","UAV",null,null,now.minusMinutes(28)));
+        auditLogs.put("C-seed-voice",new Models.AuditLog("C-seed-voice","VOICE",1L,"RETURN_HOME","无人机一号返航","ACKNOWLEDGED","VOICE",1L,"陈屿",now.minusMinutes(12)));
         users.put(1L,new Models.User(1,"王宁","13900000001",now.minusMonths(6),List.of(new Models.Address(1,1,"王宁","13900000001","南京市玄武区珠江路 1 号",32.05,118.79,true))));
         users.put(2L,new Models.User(2,"赵青","13900000002",now.minusMonths(4),List.of(new Models.Address(2,2,"赵青","13900000002","苏州市工业园区星海街 8 号",31.31,120.67,true))));
         users.put(3L,new Models.User(3,"李晗","13900000003",now.minusMonths(2),List.of()));
@@ -104,12 +110,17 @@ public class PlatformStore {
     }
     public synchronized Models.Uav uav(long id) { return required(uavs.get(id), "UAV not found"); }
     public synchronized List<Models.Alert> alerts(String level) { return sorted(alerts).stream().filter(a -> level == null || level.isBlank() || a.level().equals(level)).toList(); }
-    public synchronized Models.Alert resolveAlert(long id) { Models.Alert a=required(alerts.get(id),"Alert not found"); if(database!=null){database.resolveAlert(id);reload();return alert(id);} Models.Alert next=new Models.Alert(a.id(),a.uavId(),a.title(),a.level(),a.occurredAt(),true); alerts.put(id,next); return next; }
-    public synchronized List<Models.FlightLog> flightLogs(long uavId) { return sorted(flightLogs).stream().filter(l -> l.uavId()==uavId).toList(); }
+    public synchronized Models.Alert acknowledgeAlert(long id,long operatorId) { Models.Alert a=required(alerts.get(id),"Alert not found");if(!"OPEN".equals(a.status()))conflict("Alert is not open");if(database!=null){if(!database.acknowledgeAlert(id,operatorId))conflict("Alert is not open");reload();return alert(id);}Models.Alert next=new Models.Alert(a.id(),a.uavId(),a.podId(),a.title(),a.level(),a.occurredAt(),false,"ACKNOWLEDGED",operatorId,now(),null,null);alerts.put(id,next);return next; }
+    public synchronized Models.Alert resolveAlert(long id,long operatorId) { Models.Alert a=required(alerts.get(id),"Alert not found");if(!"ACKNOWLEDGED".equals(a.status()))conflict("Alert must be acknowledged before resolution");if(database!=null){if(!database.resolveAlert(id,operatorId))conflict("Alert must be acknowledged before resolution");reload();return alert(id);}Models.Alert next=new Models.Alert(a.id(),a.uavId(),a.podId(),a.title(),a.level(),a.occurredAt(),true,"RESOLVED",a.acknowledgedBy(),a.acknowledgedAt(),operatorId,now());alerts.put(id,next);return next; }
+    public synchronized Models.FlightLog recordFlightLog(long uavId,String event,String detail) {Models.Uav current=uav(uavId);if(database!=null){long id=database.insertFlightLog(uavId,event,detail,current.latitude(),current.longitude());return required(database.flightLog(id),"Flight log not found");}return recordMemoryFlightLog(current,event,detail);}
+    public synchronized List<Models.AuditLog> auditLogs(String type,String status,Long uavId,String query) {String q=query==null?"":query.trim().toLowerCase(Locale.ROOT);return auditLogs.values().stream().filter(item->type==null||type.isBlank()||item.category().equals(type)).filter(item->status==null||status.isBlank()||item.status().equals(status)).filter(item->uavId==null||item.uavId().equals(uavId)).filter(item->q.isBlank()||(item.title()+" "+item.detail()+" "+String.valueOf(item.operatorName())).toLowerCase(Locale.ROOT).contains(q)).sorted(Comparator.comparing(Models.AuditLog::occurredAt).thenComparing(Models.AuditLog::id).reversed()).toList();}
+    public synchronized AuditPage auditLogs(String type,String status,Long uavId,String query,int page,int size) {int safePage=Math.max(1,page);int safeSize=Math.min(Math.max(1,size),100);long requestedOffset=(long)(safePage-1)*safeSize;if(database!=null){long total=database.countAuditLogs(type,status,uavId,query);List<Models.AuditLog> items=requestedOffset>=total?List.of():database.auditLogs(type,status,uavId,query,requestedOffset,safeSize);return new AuditPage(items,safePage,safeSize,total,(int)Math.ceil(total/(double)safeSize));}List<Models.AuditLog> filtered=auditLogs(type,status,uavId,query);if(requestedOffset>=filtered.size())return new AuditPage(List.of(),safePage,safeSize,filtered.size(),(int)Math.ceil(filtered.size()/(double)safeSize));int from=(int)requestedOffset;int to=Math.min(from+safeSize,filtered.size());return new AuditPage(filtered.subList(from,to),safePage,safeSize,filtered.size(),(int)Math.ceil(filtered.size()/(double)safeSize));}
+    public synchronized List<Models.FlightLog> flightLogs(long uavId) { return database==null?flightLogs.values().stream().filter(l->l.uavId()==uavId).sorted(Comparator.comparing(Models.FlightLog::occurredAt).thenComparing(Models.FlightLog::id).reversed()).toList():database.flightLogs(uavId); }
     public synchronized void saveCommand(Models.ControlCommand command) { saveCommand(command, 1); }
-    public synchronized void saveCommand(Models.ControlCommand command,long operatorId) { if(database!=null){database.insertCommand(command,operatorId);reload();return;} commands.put(command.id(),command); }
+    public synchronized void saveCommand(Models.ControlCommand command,long operatorId) { if(database!=null)database.insertCommand(command,operatorId);commands.put(command.id(),command);trimCommandCache();if(database==null){String category="VOICE".equals(command.source())?"VOICE":"CONTROL";auditLogs.put("C-"+command.id(),new Models.AuditLog("C-"+command.id(),category,command.uavId(),command.type(),command.transcript()==null||command.transcript().isBlank()?command.status():command.transcript(),command.status(),command.source(),operatorId,"陈屿",command.createdAt()));} }
     public synchronized Models.ControlCommand command(String id) { return required(commands.get(id),"Command not found"); }
-    public synchronized Models.ControlCommand commandStatus(String id,String status) { Models.ControlCommand c=command(id); if(database!=null){database.updateCommandStatus(id,status);reload();return command(id);} Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),status,c.source(),c.transcript(),c.createdAt()); commands.put(id,next); return next; }
+    public synchronized Models.ControlCommand commandStatus(String id,String status) { Models.ControlCommand c=command(id);if(database!=null)database.updateCommandStatus(id,status);Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),status,c.source(),c.transcript(),c.createdAt());commands.put(id,next);Models.AuditLog log=auditLogs.get("C-"+id);if(log!=null)auditLogs.put(log.id(),new Models.AuditLog(log.id(),log.category(),log.uavId(),log.title(),log.detail(),status,log.source(),log.operatorId(),log.operatorName(),log.occurredAt()));trimCommandCache();return next; }
+    public synchronized Models.ControlCommand acknowledgeCommand(String id,String event,String detail) {Models.ControlCommand c=command(id);Models.Uav current=uav(c.uavId());if(database!=null)transact(()->{database.updateCommandStatus(id,"ACKNOWLEDGED");database.insertFlightLog(c.uavId(),event,detail,current.latitude(),current.longitude());});Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),"ACKNOWLEDGED",c.source(),c.transcript(),c.createdAt());commands.put(id,next);if(database==null)recordMemoryFlightLog(current,event,detail);Models.AuditLog log=auditLogs.get("C-"+id);if(log!=null)auditLogs.put(log.id(),new Models.AuditLog(log.id(),log.category(),log.uavId(),log.title(),log.detail(),"ACKNOWLEDGED",log.source(),log.operatorId(),log.operatorName(),log.occurredAt()));trimCommandCache();return next;}
     public synchronized List<Models.ControlCommand> commands() { return commands.values().stream().sorted(Comparator.comparing(Models.ControlCommand::createdAt).reversed()).toList(); }
     public synchronized List<Models.User> users(String query) { String q=query==null?"":query.trim(); return sorted(users).stream().filter(u -> q.isBlank() || u.username().contains(q) || u.phone().contains(q)).toList(); }
     public synchronized Models.User addUser(String username,String phone) { requirePhone(phone); if(users.values().stream().anyMatch(u->u.phone().equals(phone))) conflict("Phone already exists"); if(database!=null){long id=database.insertUser(username,phone);reload();return required(users.get(id),"User not found");} long id=userIds.incrementAndGet(); Models.User u=new Models.User(id,username,phone,now(),List.of()); users.put(id,u); return u; }
@@ -133,7 +144,7 @@ public class PlatformStore {
     public synchronized Models.Order cancelOrder(long id) { Models.Order order=order(id);if(!Set.of("CREATED","DISPATCHING","ERROR").contains(order.status()))conflict("Order cannot be cancelled");Models.Task active=tasks.values().stream().filter(task->task.orderId()==id&&Set.of("WAITING","FLYING").contains(task.taskStatus())).findFirst().orElse(null);if(database!=null){transact(()->{if(active!=null)database.terminateTask(active.id(),"ORDER_CANCELLED");database.updateOrderStatus(id,"CANCELLED");});reload();return order(id);}if(active!=null)tasks.put(active.id(),new Models.Task(active.id(),active.orderId(),active.uavId(),"FAILED",active.startTime(),now(),"ORDER_CANCELLED"));Models.Order cancelled=new Models.Order(order.id(),order.orderNo(),order.userId(),order.addressId(),order.totalPrice(),"CANCELLED",order.createdAt(),order.addressSnapshot(),order.items());orders.put(id,cancelled);return cancelled; }
     public synchronized List<Models.Task> tasks(String status) { return sorted(tasks).stream().filter(t->status==null||status.isBlank()||t.taskStatus().equals(status)).toList(); }
     public synchronized Models.Task transitionTask(long id,String target) { return transitionTask(id,target,null); }
-    public synchronized Models.Task transitionTask(long id,String target,String failureReason) { Models.Task t=required(tasks.get(id),"Task not found"); Map<String,Set<String>> allowed=Map.of("WAITING",Set.of("FLYING","FAILED"),"FLYING",Set.of("ARRIVED","FAILED"),"ARRIVED",Set.of(),"FAILED",Set.of()); if(!allowed.getOrDefault(t.taskStatus(),Set.of()).contains(target)) conflict("Illegal task transition: "+t.taskStatus()+" -> "+target); OffsetDateTime start="FLYING".equals(target)?now():t.startTime(); OffsetDateTime end=Set.of("ARRIVED","FAILED").contains(target)?now():t.endTime();String orderTarget="FLYING".equals(target)?"DELIVERING":"ARRIVED".equals(target)?"FINISHED":"ERROR"; if(database!=null){transact(()->{database.updateTask(id,target,start,end,"FAILED".equals(target)?failureReason:null);database.updateOrderStatus(t.orderId(),orderTarget);});reload();return required(tasks.get(id),"Task not found");} Models.Task next=new Models.Task(t.id(),t.orderId(),t.uavId(),target,start,end,"FAILED".equals(target)?failureReason:null); tasks.put(id,next); transitionOrder(t.orderId(),orderTarget); return next; }
+    public synchronized Models.Task transitionTask(long id,String target,String failureReason) { Models.Task t=required(tasks.get(id),"Task not found"); Map<String,Set<String>> allowed=Map.of("WAITING",Set.of("FLYING","FAILED"),"FLYING",Set.of("ARRIVED","FAILED"),"ARRIVED",Set.of(),"FAILED",Set.of()); if(!allowed.getOrDefault(t.taskStatus(),Set.of()).contains(target)) conflict("Illegal task transition: "+t.taskStatus()+" -> "+target); OffsetDateTime start="FLYING".equals(target)?now():t.startTime(); OffsetDateTime end=Set.of("ARRIVED","FAILED").contains(target)?now():t.endTime();String orderTarget="FLYING".equals(target)?"DELIVERING":"ARRIVED".equals(target)?"FINISHED":"ERROR";String event="FLYING".equals(target)?"配送任务起飞":"ARRIVED".equals(target)?"配送任务到达":null;String detail="任务 TSK-"+String.format("%04d",t.id());Models.Uav current=uav(t.uavId());if(database!=null){transact(()->{database.updateTask(id,target,start,end,"FAILED".equals(target)?failureReason:null);database.updateOrderStatus(t.orderId(),orderTarget);if(event!=null)database.insertFlightLog(t.uavId(),event,detail,current.latitude(),current.longitude());});reload();return required(tasks.get(id),"Task not found");} Models.Task next=new Models.Task(t.id(),t.orderId(),t.uavId(),target,start,end,"FAILED".equals(target)?failureReason:null); tasks.put(id,next); transitionOrder(t.orderId(),orderTarget);if(event!=null)recordMemoryFlightLog(current,event,detail);return next; }
     public synchronized List<Models.Pod> pods() { return sorted(pods); }
     public synchronized Models.Pod updatePod(long id,String doorStatus,Long uavId) { Models.Pod p=required(pods.get(id),"Pod not found"); if(!Set.of("OPEN","CLOSED","ERROR").contains(doorStatus)) throw new IllegalArgumentException("Invalid door status"); if(uavId!=null) uav(uavId); if(database!=null){database.updatePod(id,doorStatus,uavId);reload();return required(pods.get(id),"Pod not found");} Models.Pod next=new Models.Pod(p.id(),p.name(),p.region(),doorStatus,uavId); pods.put(id,next); return next; }
     public synchronized List<Models.Binding> bindings() { return sorted(bindings); }
@@ -146,6 +157,10 @@ public class PlatformStore {
 
     private Models.Alert alert(long id) { return required(alerts.get(id), "Alert not found"); }
 
+    private Models.FlightLog recordMemoryFlightLog(Models.Uav uav,String event,String detail) {long id=flightLogs.keySet().stream().mapToLong(Long::longValue).max().orElse(0)+1;Models.FlightLog log=new Models.FlightLog(id,uav.id(),event,detail,uav.latitude(),uav.longitude(),now());flightLogs.put(id,log);auditLogs.put("F-"+id,new Models.AuditLog("F-"+id,"FLIGHT",uav.id(),event,detail,"RECORDED","UAV",null,null,log.occurredAt()));return log;}
+
+    private void trimCommandCache() {if(commands.size()<=500)return;commands.values().stream().filter(command->Set.of("ACKNOWLEDGED","FAILED","TIMEOUT").contains(command.status())).min(Comparator.comparing(Models.ControlCommand::createdAt).thenComparing(Models.ControlCommand::id)).ifPresent(oldest->commands.remove(oldest.id()));}
+
     private void transact(Runnable action) {
         if (transactions == null) action.run();
         else transactions.executeWithoutResult(status -> action.run());
@@ -155,7 +170,6 @@ public class PlatformStore {
         PlatformDatabase.Snapshot snapshot = database.snapshot();
         replace(uavs, snapshot.uavs(), Models.Uav::id);
         replace(alerts, snapshot.alerts(), Models.Alert::id);
-        replace(flightLogs, snapshot.flightLogs(), Models.FlightLog::id);
         commands.clear(); snapshot.commands().forEach(command -> commands.put(command.id(), command));
         replace(users, snapshot.users(), Models.User::id);
         replace(goods, snapshot.goods(), Models.Goods::id);

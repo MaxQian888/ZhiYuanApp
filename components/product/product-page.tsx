@@ -46,6 +46,7 @@ import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppShell } from "@/components/product/app-shell"
 import {
   ActionTooltip,
@@ -310,13 +311,24 @@ function DashboardView() {
                   className="text-button"
                   onClick={() =>
                     void executeAction(
-                      () => store.resolveAlert(alert.id),
+                      () =>
+                        alert.status === "OPEN"
+                          ? store.acknowledgeAlert(alert.id)
+                          : store.resolveAlert(alert.id),
                       store.locale,
-                      copy.acknowledge
+                      alert.status === "OPEN"
+                        ? copy.acknowledge
+                        : store.locale === "zh-CN"
+                          ? "解除告警"
+                          : "Resolve alert"
                     )
                   }
                 >
-                  {copy.acknowledge}
+                  {alert.status === "OPEN"
+                    ? copy.acknowledge
+                    : store.locale === "zh-CN"
+                      ? "解除"
+                      : "Resolve"}
                 </Button>
               </div>
             ))}
@@ -576,8 +588,16 @@ function UavDetailView() {
   const uav = store.uavs.find((item) => item.id === id) ?? store.uavs[0]
   const [command, setCommand] = useState<CommandType | null>(null)
   const [retryingCommandId, setRetryingCommandId] = useState<string | null>(null)
-  const commands = store.commands.filter((item) => item.uavId === uav.id)
-  const logs = store.flightLogs.filter((item) => item.uavId === uav.id)
+  const commands = store.commands.filter((item) => item.uavId === uav?.id)
+  const serverFlightLogs = useQuery({
+    queryKey: ["flight-logs", uav?.id],
+    queryFn: () => api.flightLogs(uav!.id),
+    enabled: isRemoteApi && Boolean(uav),
+  })
+  const logs = isRemoteApi
+    ? (serverFlightLogs.data ?? [])
+    : store.flightLogs.filter((item) => item.uavId === uav?.id)
+  if (!uav) return <QueryLoading locale={store.locale} />
   return (
     <>
       <PageHeader
@@ -711,7 +731,11 @@ function UavDetailView() {
         )}
       </Section>
       <Section title={copy.logs}>
-        {logs.length ? (
+        {isRemoteApi && serverFlightLogs.isPending ? (
+          <QueryLoading locale={store.locale} />
+        ) : isRemoteApi && serverFlightLogs.isError ? (
+          <QueryError locale={store.locale} onRetry={() => void serverFlightLogs.refetch()} />
+        ) : logs.length ? (
           <div className="timeline">
             {logs.map((item) => (
               <div key={item.id}>
@@ -734,13 +758,74 @@ function UavDetailView() {
   )
 }
 
+interface MapProvider {
+  name: string
+  project: (
+    latitude: number,
+    longitude: number,
+    bounds: {
+      centerLatitude: number
+      centerLongitude: number
+      latitudeSpan: number
+      longitudeSpan: number
+    }
+  ) => { x: number; y: number }
+}
+
+const testMapProvider: MapProvider = {
+  name: "TEST MAP PROVIDER",
+  project: (latitude, longitude, bounds) => ({
+    x: 50 + ((longitude - bounds.centerLongitude) / bounds.longitudeSpan) * 84,
+    y: 30 - ((latitude - bounds.centerLatitude) / bounds.latitudeSpan) * 48,
+  }),
+}
+
 function MapView() {
   const store = useProductStore()
   const copy = useCopy(store.locale)
   const id = useUrlId(store.selectedUavId)
   const [selected, setSelected] = useState(id)
   const [zoom, setZoom] = useState(7)
+  const [mapCenter, setMapCenter] = useState<{ latitude: number; longitude: number } | null>(null)
   const uav = store.uavs.find((item) => item.id === selected) ?? store.uavs[0]
+  const serverFlightLogs = useQuery({
+    queryKey: ["flight-logs", uav?.id],
+    queryFn: () => api.flightLogs(uav!.id),
+    enabled: isRemoteApi && Boolean(uav),
+  })
+  const mapFlightLogs = isRemoteApi
+    ? (serverFlightLogs.data ?? [])
+    : store.flightLogs.filter((item) => item.uavId === uav?.id)
+  if (!uav) return <QueryLoading locale={store.locale} />
+  const coordinateLogs = mapFlightLogs
+    .filter(
+      (item): item is typeof item & { latitude: number; longitude: number } =>
+        item.latitude !== undefined && item.longitude !== undefined
+    )
+    .toSorted((left, right) => left.occurredAt.localeCompare(right.occurredAt))
+  const coordinates = [
+    ...coordinateLogs.map((item) => ({ latitude: item.latitude, longitude: item.longitude })),
+    { latitude: uav.latitude, longitude: uav.longitude },
+  ]
+  const minLatitude = Math.min(...coordinates.map((point) => point.latitude))
+  const maxLatitude = Math.max(...coordinates.map((point) => point.latitude))
+  const minLongitude = Math.min(...coordinates.map((point) => point.longitude))
+  const maxLongitude = Math.max(...coordinates.map((point) => point.longitude))
+  const zoomFactor = 7 / zoom
+  const latitudeSpan = Math.max(maxLatitude - minLatitude, 0.02) * zoomFactor
+  const longitudeSpan = Math.max(maxLongitude - minLongitude, 0.02) * zoomFactor
+  const centerLatitude = mapCenter?.latitude ?? (minLatitude + maxLatitude) / 2
+  const centerLongitude = mapCenter?.longitude ?? (minLongitude + maxLongitude) / 2
+  const project = (latitude: number, longitude: number) =>
+    testMapProvider.project(latitude, longitude, {
+      centerLatitude,
+      centerLongitude,
+      latitudeSpan,
+      longitudeSpan,
+    })
+  const trackPoints = coordinateLogs.map((item) => project(item.latitude, item.longitude))
+  const currentPoint = project(uav.latitude, uav.longitude)
+  const visibleTrack = [...trackPoints, currentPoint]
   return (
     <>
       <PageHeader
@@ -757,7 +842,11 @@ function MapView() {
             {copy.uavs}
             <NativeSelect
               value={selected}
-              onChange={(event) => setSelected(Number(event.target.value))}
+              onChange={(event) => {
+                setSelected(Number(event.target.value))
+                setMapCenter(null)
+                setZoom(7)
+              }}
             >
               {store.uavs.map((item) => (
                 <NativeSelectOption value={item.id} key={item.id}>
@@ -781,7 +870,22 @@ function MapView() {
             </div>
             <div>
               <dt>{copy.track}</dt>
-              <dd>{store.flightLogs.filter((item) => item.uavId === uav.id).length} points</dd>
+              <dd>
+                {isRemoteApi && serverFlightLogs.isPending ? (
+                  <Spinner aria-label={store.locale === "zh-CN" ? "加载轨迹" : "Loading track"} />
+                ) : isRemoteApi && serverFlightLogs.isError ? (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-button"
+                    onClick={() => void serverFlightLogs.refetch()}
+                  >
+                    {store.locale === "zh-CN" ? "重试" : "Retry"}
+                  </Button>
+                ) : (
+                  `${mapFlightLogs.length} ${store.locale === "zh-CN" ? "个事件点" : "events"}`
+                )}
+              </dd>
             </div>
           </dl>
         </aside>
@@ -803,16 +907,30 @@ function MapView() {
               )
             })}
           </div>
-          <svg viewBox="0 0 100 60" aria-hidden="true">
-            <polyline points="10,48 25,40 37,43 52,28 68,31 84,15" />
-            <circle cx="10" cy="48" r="2" />
-            <circle cx="84" cy="15" r="2.8" />
-          </svg>
+          {trackPoints.length ? (
+            <svg viewBox="0 0 100 60" role="img" aria-label={`${uav.code} ${copy.track}`}>
+              <polyline points={visibleTrack.map((point) => `${point.x},${point.y}`).join(" ")} />
+              {trackPoints.map((point, index) => (
+                <circle key={`${point.x}-${point.y}-${index}`} cx={point.x} cy={point.y} r="1.8">
+                  <title>{coordinateLogs[index]?.event}</title>
+                </circle>
+              ))}
+              <circle cx={currentPoint.x} cy={currentPoint.y} r="2.8">
+                <title>{store.locale === "zh-CN" ? "当前位置" : "Current position"}</title>
+              </circle>
+            </svg>
+          ) : (
+            <span className="map-empty-track">
+              {store.locale === "zh-CN"
+                ? "暂无轨迹数据，仅显示当前位置"
+                : "No track data; showing current position"}
+            </span>
+          )}
           <div
             className="map-marker"
             style={{
-              left: `${45 + uav.id * 4}%`,
-              top: `${38 - uav.id * 2}%`,
+              left: `${currentPoint.x}%`,
+              top: `${(currentPoint.y / 60) * 100}%`,
               transform: `scale(${0.85 + zoom * 0.03})`,
             }}
           >
@@ -844,14 +962,16 @@ function MapView() {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => setSelected(uav.id)}
+                onClick={() => setMapCenter({ latitude: uav.latitude, longitude: uav.longitude })}
                 aria-label={copy.center}
               >
                 <Crosshair />
               </Button>
             </ActionTooltip>
           </div>
-          <span className="provider-label">TEST MAP PROVIDER · Z{zoom}</span>
+          <span className="provider-label">
+            {testMapProvider.name} · Z{zoom}
+          </span>
         </div>
       </div>
     </>
@@ -1008,6 +1128,42 @@ function VoiceView() {
 function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
   const store = useProductStore()
   const copy = useCopy(store.locale)
+  const [alertLevel, setAlertLevel] = useState("ALL")
+  const [alertStatus, setAlertStatus] = useState("ALL")
+  const [logType, setLogType] = useState("ALL")
+  const [logQuery, setLogQuery] = useState("")
+  const [logPage, setLogPage] = useState(1)
+  const logSize = 20
+  const serverLogs = useQuery({
+    queryKey: ["audit-logs-page", logType, logQuery, logPage],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(logPage), size: String(logSize) })
+      if (logType !== "ALL") params.set("type", logType)
+      if (logQuery.trim()) params.set("q", logQuery.trim())
+      return api.auditLogs(`?${params}`)
+    },
+    enabled: isRemoteApi && view === "logs",
+    placeholderData: (previous) => previous,
+  })
+  const visibleAlerts = store.alerts.filter(
+    (alert) =>
+      (alertLevel === "ALL" || alert.level === alertLevel) &&
+      (alertStatus === "ALL" || alert.status === alertStatus)
+  )
+  const filteredLogs = store.auditLogs.filter(
+    (log) =>
+      (logType === "ALL" || log.category === logType) &&
+      (!logQuery.trim() ||
+        `${log.title} ${log.detail} ${log.operatorName ?? ""}`
+          .toLocaleLowerCase()
+          .includes(logQuery.trim().toLocaleLowerCase()))
+  )
+  const logRows = isRemoteApi
+    ? (serverLogs.data?.items ?? [])
+    : filteredLogs.slice((logPage - 1) * logSize, logPage * logSize)
+  const logTotalPages = isRemoteApi
+    ? (serverLogs.data?.totalPages ?? 1)
+    : Math.max(1, Math.ceil(filteredLogs.length / logSize))
   if (view === "alerts")
     return (
       <>
@@ -1019,7 +1175,35 @@ function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
               : "Review, acknowledge, and trace alerts by severity."
           }
         />
-        <Section title={`${copy.alerts} · ${store.alerts.length}`}>
+        <Section title={`${copy.alerts} · ${visibleAlerts.length}`}>
+          <div className="filter-toolbar">
+            <Field label={store.locale === "zh-CN" ? "告警等级" : "Severity"}>
+              <NativeSelect
+                value={alertLevel}
+                onChange={(event) => setAlertLevel(event.target.value)}
+              >
+                <NativeSelectOption value="ALL">
+                  {store.locale === "zh-CN" ? "全部" : "All"}
+                </NativeSelectOption>
+                <NativeSelectOption value="HIGH">HIGH</NativeSelectOption>
+                <NativeSelectOption value="MID">MID</NativeSelectOption>
+                <NativeSelectOption value="LOW">LOW</NativeSelectOption>
+              </NativeSelect>
+            </Field>
+            <Field label={copy.status}>
+              <NativeSelect
+                value={alertStatus}
+                onChange={(event) => setAlertStatus(event.target.value)}
+              >
+                <NativeSelectOption value="ALL">
+                  {store.locale === "zh-CN" ? "全部" : "All"}
+                </NativeSelectOption>
+                <NativeSelectOption value="OPEN">OPEN</NativeSelectOption>
+                <NativeSelectOption value="ACKNOWLEDGED">ACKNOWLEDGED</NativeSelectOption>
+                <NativeSelectOption value="RESOLVED">RESOLVED</NativeSelectOption>
+              </NativeSelect>
+            </Field>
+          </div>
           <div className="data-table compact">
             <div className="table-head">
               <span>{copy.alerts}</span>
@@ -1028,31 +1212,64 @@ function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
               <span>{copy.updated}</span>
               <span>{copy.action}</span>
             </div>
-            {store.alerts.map((item) => (
+            {visibleAlerts.map((item) => (
               <div className="table-row" key={item.id}>
                 <span data-label={copy.alerts}>
                   <strong>{item.title}</strong>
+                  <small>{item.level}</small>
                 </span>
                 <span data-label={copy.uavs}>
-                  {item.uavId ? store.uavs.find((uav) => uav.id === item.uavId)?.code : "POD-03"}
+                  {item.uavId ? (
+                    <Link className="touch-link" href={`/uavs/detail?id=${item.uavId}`}>
+                      {store.uavs.find((uav) => uav.id === item.uavId)?.code ?? `UAV-${item.uavId}`}
+                    </Link>
+                  ) : item.podId ? (
+                    <Link className="touch-link" href="/pods">
+                      POD-{String(item.podId).padStart(2, "0")}
+                    </Link>
+                  ) : store.locale === "zh-CN" ? (
+                    "平台"
+                  ) : (
+                    "Platform"
+                  )}
                 </span>
                 <span data-label={copy.status}>
-                  <StatusPill value={item.resolved ? "RESOLVED" : item.level} />
+                  <StatusPill value={item.status} />
+                  {(item.resolvedAt || item.acknowledgedAt) && (
+                    <small>
+                      #{item.resolvedBy ?? item.acknowledgedBy} ·{" "}
+                      {formatDate(item.resolvedAt ?? item.acknowledgedAt!, store.locale)}
+                    </small>
+                  )}
                 </span>
                 <span data-label={copy.updated}>{formatDate(item.occurredAt, store.locale)}</span>
                 <span data-label={copy.action}>
-                  {!item.resolved && (
+                  {item.status === "OPEN" && (
                     <Button
                       className="text-button"
                       onClick={() =>
                         void executeAction(
-                          () => store.resolveAlert(item.id),
+                          () => store.acknowledgeAlert(item.id),
                           store.locale,
                           copy.acknowledge
                         )
                       }
                     >
                       {copy.acknowledge}
+                    </Button>
+                  )}
+                  {item.status === "ACKNOWLEDGED" && (
+                    <Button
+                      className="text-button"
+                      onClick={() =>
+                        void executeAction(
+                          () => store.resolveAlert(item.id),
+                          store.locale,
+                          store.locale === "zh-CN" ? "解除告警" : "Resolve alert"
+                        )
+                      }
+                    >
+                      {store.locale === "zh-CN" ? "解除" : "Resolve"}
                     </Button>
                   )}
                 </span>
@@ -1162,36 +1379,86 @@ function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
         }
       />
       <Section title={copy.logs}>
-        <div className="timeline">
-          {[
-            ...store.commands.map((item) => ({
-              id: item.id,
-              icon: Radio,
-              title: `${item.type} · ${item.status}`,
-              detail: `${item.source} · ${store.uavs.find((uav) => uav.id === item.uavId)?.code}`,
-              time: item.createdAt,
-            })),
-            ...store.flightLogs.map((item) => ({
-              id: `f-${item.id}`,
-              icon: Plane,
-              title: item.event,
-              detail: item.detail,
-              time: item.occurredAt,
-            })),
-          ]
-            .sort((a, b) => b.time.localeCompare(a.time))
-            .map((item) => (
-              <div key={item.id}>
-                <item.icon />
-                <span>
-                  <strong>{item.title}</strong>
-                  <small>
-                    {item.detail} · {formatDate(item.time, store.locale)}
-                  </small>
-                </span>
-              </div>
-            ))}
+        <div className="audit-toolbar">
+          <Tabs
+            value={logType}
+            onValueChange={(value) => {
+              setLogType(value)
+              setLogPage(1)
+            }}
+          >
+            <TabsList
+              variant="line"
+              aria-label={store.locale === "zh-CN" ? "日志类型" : "Log type"}
+            >
+              <TabsTrigger value="ALL">{store.locale === "zh-CN" ? "全部" : "All"}</TabsTrigger>
+              <TabsTrigger value="FLIGHT">
+                {store.locale === "zh-CN" ? "飞行" : "Flight"}
+              </TabsTrigger>
+              <TabsTrigger value="CONTROL">
+                {store.locale === "zh-CN" ? "控制" : "Control"}
+              </TabsTrigger>
+              <TabsTrigger value="VOICE">{store.locale === "zh-CN" ? "语音" : "Voice"}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Input
+            type="search"
+            value={logQuery}
+            placeholder={
+              store.locale === "zh-CN"
+                ? "搜索事件、详情或操作人"
+                : "Search event, detail, or operator"
+            }
+            aria-label={store.locale === "zh-CN" ? "搜索日志" : "Search logs"}
+            onChange={(event) => {
+              setLogQuery(event.target.value)
+              setLogPage(1)
+            }}
+          />
         </div>
+        {isRemoteApi && serverLogs.isPending ? (
+          <QueryLoading locale={store.locale} />
+        ) : isRemoteApi && serverLogs.isError ? (
+          <QueryError locale={store.locale} onRetry={() => void serverLogs.refetch()} />
+        ) : logRows.length ? (
+          <div className="timeline">
+            {logRows.map((item) => {
+              const Icon =
+                item.category === "FLIGHT" ? Plane : item.category === "VOICE" ? Mic : Radio
+              return (
+                <div key={item.id}>
+                  <Icon />
+                  <span>
+                    <strong>{item.title}</strong>
+                    <small>
+                      {item.detail} ·{" "}
+                      {item.uavId ? (
+                        <Link className="touch-link" href={`/uavs/detail?id=${item.uavId}`}>
+                          {store.uavs.find((uav) => uav.id === item.uavId)?.code ??
+                            `UAV-${item.uavId}`}
+                        </Link>
+                      ) : (
+                        "—"
+                      )}
+                      {item.operatorName ? ` · ${item.operatorName}` : ""} ·{" "}
+                      {formatDate(item.occurredAt, store.locale)}
+                    </small>
+                  </span>
+                  <StatusPill value={item.status} />
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <EmptyState title={store.locale === "zh-CN" ? "暂无匹配日志" : "No matching logs"} />
+        )}
+        <PaginationControls
+          page={logPage}
+          totalPages={logTotalPages}
+          pending={serverLogs.isFetching}
+          locale={store.locale}
+          onPageChange={setLogPage}
+        />
       </Section>
     </>
   )
