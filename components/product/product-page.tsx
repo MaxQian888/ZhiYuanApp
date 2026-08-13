@@ -7,6 +7,14 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import {
+  ArrowDown,
+  ArrowDownLeft,
+  ArrowDownRight,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpLeft,
+  ArrowUpRight,
   AlertTriangle,
   Battery,
   Check,
@@ -22,6 +30,7 @@ import {
   Radio,
   RotateCcw,
   Search,
+  Save,
   ShieldCheck,
   UserCog,
   Warehouse,
@@ -48,6 +57,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AppShell } from "@/components/product/app-shell"
+import { DesktopTitlebar } from "@/components/product/desktop-titlebar"
 import {
   ActionTooltip,
   ConfirmAction,
@@ -72,11 +82,15 @@ import { useCopy } from "@/lib/i18n-product"
 import { api } from "@/lib/api/client"
 import { resumeSessionRecovery, suppressSessionRecovery } from "@/lib/api/client"
 import { isRemoteApi } from "@/lib/env"
+import { useTauriRuntime } from "@/hooks/use-tauri-runtime"
 import {
   checkForAppUpdate,
   getPlatformInfo,
   installAppUpdate,
-  isTauri,
+  moveAppWindow,
+  restoreAppWindowState,
+  saveAppWindowState,
+  type AppWindowPosition,
   type PlatformInfo,
 } from "@/lib/tauri"
 import { useProductStore } from "@/stores/product-store"
@@ -2551,6 +2565,9 @@ function SettingsView() {
   const [installingUpdate, setInstallingUpdate] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null)
+  const desktopRuntime = useTauriRuntime()
+  const [windowBusy, setWindowBusy] = useState(false)
+  const [windowMessage, setWindowMessage] = useState("")
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [currentPassword, setCurrentPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
@@ -2724,7 +2741,7 @@ function SettingsView() {
   const checkUpdate = async () => {
     setCheckingUpdate(true)
     setAvailableUpdate(null)
-    if (!isTauri()) {
+    if (!desktopRuntime) {
       const result = await executeAction(api.version, store.locale)
       if (result.ok)
         setUpdateMessage(
@@ -2773,6 +2790,39 @@ function SettingsView() {
     )
     if (result.installed) setAvailableUpdate(null)
   }
+  const runWindowAction = async (action: () => Promise<boolean>, successMessage: string) => {
+    setWindowBusy(true)
+    try {
+      const supported = await action()
+      if (!supported) throw new Error("Desktop runtime is unavailable")
+      setWindowMessage(successMessage)
+      toast.success(successMessage)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      const message =
+        store.locale === "zh-CN" ? `窗口操作失败：${detail}` : `Window operation failed: ${detail}`
+      setWindowMessage(message)
+      toast.error(message)
+    } finally {
+      setWindowBusy(false)
+    }
+  }
+  const windowPositions: Array<{
+    value: AppWindowPosition
+    zh: string
+    en: string
+    icon: typeof ArrowUpLeft
+  }> = [
+    { value: "top-left", zh: "左上", en: "Top left", icon: ArrowUpLeft },
+    { value: "top-center", zh: "上方", en: "Top", icon: ArrowUp },
+    { value: "top-right", zh: "右上", en: "Top right", icon: ArrowUpRight },
+    { value: "left-center", zh: "左侧", en: "Left", icon: ArrowLeft },
+    { value: "center", zh: "居中", en: "Center", icon: LocateFixed },
+    { value: "right-center", zh: "右侧", en: "Right", icon: ArrowRight },
+    { value: "bottom-left", zh: "左下", en: "Bottom left", icon: ArrowDownLeft },
+    { value: "bottom-center", zh: "下方", en: "Bottom", icon: ArrowDown },
+    { value: "bottom-right", zh: "右下", en: "Bottom right", icon: ArrowDownRight },
+  ]
   return (
     <>
       <PageHeader
@@ -2791,6 +2841,9 @@ function SettingsView() {
           )}
           <a href="#security">{copy.security}</a>
           <a href="#bindings">{copy.bindings}</a>
+          {desktopRuntime && (
+            <a href="#desktop">{store.locale === "zh-CN" ? "桌面窗口" : "Desktop window"}</a>
+          )}
           <a href="#about">{copy.about}</a>
         </nav>
         <div>
@@ -3023,6 +3076,86 @@ function SettingsView() {
               </NativeSelect>
             </div>
           </Section>
+          {desktopRuntime && (
+            <Section title={store.locale === "zh-CN" ? "桌面窗口" : "Desktop window"}>
+              <div id="desktop" className="desktop-window-settings">
+                <div className="desktop-setting-intro">
+                  <span>
+                    <strong>
+                      {store.locale === "zh-CN" ? "无边框窗口布局" : "Frameless window layout"}
+                    </strong>
+                    <small>
+                      {store.locale === "zh-CN"
+                        ? "窗口尺寸、位置、最大化与全屏状态会在退出时自动保存。"
+                        : "Size, position, maximized, and fullscreen state are saved automatically on exit."}
+                    </small>
+                  </span>
+                  <StatusPill value={store.locale === "zh-CN" ? "桌面已启用" : "Desktop enabled"} />
+                </div>
+                <div
+                  className="window-position-grid"
+                  aria-label={store.locale === "zh-CN" ? "窗口定位" : "Window positioning"}
+                >
+                  {windowPositions.map(({ value, zh, en, icon: Icon }) => {
+                    const label = store.locale === "zh-CN" ? zh : en
+                    return (
+                      <Button
+                        key={value}
+                        type="button"
+                        variant="outline"
+                        disabled={windowBusy}
+                        aria-label={`${store.locale === "zh-CN" ? "移动窗口到" : "Move window to"} ${label}`}
+                        onClick={() =>
+                          void runWindowAction(
+                            () => moveAppWindow(value),
+                            store.locale === "zh-CN"
+                              ? `窗口已移动到${label}`
+                              : `Window moved to ${label.toLowerCase()}`
+                          )
+                        }
+                      >
+                        <Icon />
+                        <span>{label}</span>
+                      </Button>
+                    )
+                  })}
+                </div>
+                <div className="window-state-actions">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={windowBusy}
+                    onClick={() =>
+                      void runWindowAction(
+                        saveAppWindowState,
+                        store.locale === "zh-CN"
+                          ? "当前窗口布局已保存"
+                          : "Current window layout saved"
+                      )
+                    }
+                  >
+                    <Save />
+                    {store.locale === "zh-CN" ? "立即保存布局" : "Save layout now"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={windowBusy}
+                    onClick={() =>
+                      void runWindowAction(
+                        restoreAppWindowState,
+                        store.locale === "zh-CN" ? "已恢复上次保存的布局" : "Saved layout restored"
+                      )
+                    }
+                  >
+                    <RotateCcw />
+                    {store.locale === "zh-CN" ? "恢复保存布局" : "Restore saved layout"}
+                  </Button>
+                </div>
+                {windowMessage && <p className="window-action-status">{windowMessage}</p>}
+              </div>
+            </Section>
+          )}
           <Section title={copy.about}>
             <div id="about" className="settings-rows">
               <Button
@@ -3083,6 +3216,41 @@ function SettingsView() {
                     : "WEB · API v1"}
                 </code>
               </div>
+              {platformInfo && (
+                <dl className="desktop-system-info">
+                  <div>
+                    <dt>{store.locale === "zh-CN" ? "操作系统" : "Operating system"}</dt>
+                    <dd>
+                      {platformInfo.osType.toUpperCase()} {platformInfo.osVersion}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{store.locale === "zh-CN" ? "系统家族" : "System family"}</dt>
+                    <dd>{platformInfo.family}</dd>
+                  </div>
+                  <div>
+                    <dt>{store.locale === "zh-CN" ? "处理器架构" : "Architecture"}</dt>
+                    <dd>{platformInfo.architecture}</dd>
+                  </div>
+                  <div>
+                    <dt>{store.locale === "zh-CN" ? "系统语言" : "System locale"}</dt>
+                    <dd>
+                      {platformInfo.locale ?? (store.locale === "zh-CN" ? "未知" : "Unknown")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{store.locale === "zh-CN" ? "可执行扩展名" : "Executable extension"}</dt>
+                    <dd>
+                      {platformInfo.executableExtension ||
+                        (store.locale === "zh-CN" ? "无" : "None")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{store.locale === "zh-CN" ? "应用版本" : "App version"}</dt>
+                    <dd>v{platformInfo.appVersion}</dd>
+                  </div>
+                </dl>
+              )}
               <Button
                 className="danger-row"
                 disabled={loggingOut}
@@ -3397,6 +3565,7 @@ function SettingsView() {
 
 function LoginView() {
   const store = useProductStore()
+  const desktopRuntime = useTauriRuntime()
   const copy = useCopy(store.locale)
   const [username, setUsername] = useState(isRemoteApi ? "" : "admin")
   const [password, setPassword] = useState(isRemoteApi ? "" : "admin123")
@@ -3423,64 +3592,67 @@ function LoginView() {
     }
   }
   return (
-    <main className="login-page">
-      <section className="login-intro">
-        <span className="brand-mark">鸢</span>
-        <p>{copy.console}</p>
-        <h1>{store.locale === "zh-CN" ? "看清状态，再下指令。" : "Read the state. Then act."}</h1>
-        <div className="login-signals">
-          <span>
-            <i />
-            {copy.live}
-          </span>
-          <span>{isRemoteApi ? "API v1" : "6 UAV"}</span>
-          <span>{isRemoteApi ? "SSE" : "3 POD"}</span>
-        </div>
-      </section>
-      <section className="login-form-panel">
-        <Button
-          className="locale-button"
-          onClick={() => store.setLocale(store.locale === "zh-CN" ? "en" : "zh-CN")}
-        >
-          {store.locale === "zh-CN" ? "EN" : "中"}
-        </Button>
-        <form onSubmit={submit}>
-          <h2>{copy.login}</h2>
-          <p>{copy.loginIntro}</p>
-          <Field label={copy.username}>
-            <Input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-            />
-          </Field>
-          <Field label={copy.password} error={error}>
-            <Input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-          </Field>
-          <Button className="button button-primary button-wide" disabled={loading}>
-            <PendingLabel
-              pending={loading}
-              pendingLabel={store.locale === "zh-CN" ? "登录中…" : "Signing in…"}
-            >
-              {copy.login}
-            </PendingLabel>
+    <div className={desktopRuntime ? "login-window is-desktop" : "login-window"}>
+      {desktopRuntime && <DesktopTitlebar />}
+      <main className="login-page">
+        <section className="login-intro">
+          <span className="brand-mark">鸢</span>
+          <p>{copy.console}</p>
+          <h1>{store.locale === "zh-CN" ? "看清状态，再下指令。" : "Read the state. Then act."}</h1>
+          <div className="login-signals">
+            <span>
+              <i />
+              {copy.live}
+            </span>
+            <span>{isRemoteApi ? "API v1" : "6 UAV"}</span>
+            <span>{isRemoteApi ? "SSE" : "3 POD"}</span>
+          </div>
+        </section>
+        <section className="login-form-panel">
+          <Button
+            className="locale-button"
+            onClick={() => store.setLocale(store.locale === "zh-CN" ? "en" : "zh-CN")}
+          >
+            {store.locale === "zh-CN" ? "EN" : "中"}
           </Button>
-          <small>
-            {isRemoteApi
-              ? store.locale === "zh-CN"
-                ? "请使用已授权的员工账号登录"
-                : "Sign in with an authorized staff account"
-              : copy.loginDemo}
-          </small>
-        </form>
-        <footer>© 2026 · ZHIYUAN OPERATIONS · v1.0.0</footer>
-      </section>
-    </main>
+          <form onSubmit={submit}>
+            <h2>{copy.login}</h2>
+            <p>{copy.loginIntro}</p>
+            <Field label={copy.username}>
+              <Input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+              />
+            </Field>
+            <Field label={copy.password} error={error}>
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </Field>
+            <Button className="button button-primary button-wide" disabled={loading}>
+              <PendingLabel
+                pending={loading}
+                pendingLabel={store.locale === "zh-CN" ? "登录中…" : "Signing in…"}
+              >
+                {copy.login}
+              </PendingLabel>
+            </Button>
+            <small>
+              {isRemoteApi
+                ? store.locale === "zh-CN"
+                  ? "请使用已授权的员工账号登录"
+                  : "Sign in with an authorized staff account"
+                : copy.loginDemo}
+            </small>
+          </form>
+          <footer>© 2026 · ZHIYUAN OPERATIONS · v1.0.0</footer>
+        </section>
+      </main>
+    </div>
   )
 }
 

@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core"
+import { invoke, isTauri as isTauriRuntime } from "@tauri-apps/api/core"
+import type { StateFlags as WindowStateFlags } from "@tauri-apps/plugin-window-state"
 
 /**
  * Detects whether the app is running inside a Tauri webview.
@@ -6,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core"
  * works in both `pnpm dev` (web) and `pnpm tauri dev` (desktop).
  */
 export function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+  return typeof window !== "undefined" && isTauriRuntime()
 }
 
 // Type-safe wrappers for Rust commands defined in src-tauri/src/commands.rs.
@@ -17,11 +18,164 @@ export type PlatformInfo = {
   platform: string
   architecture: string
   appVersion: string
+  osType: string
+  osVersion: string
+  family: string
+  locale: string | null
+  executableExtension: string
 }
 
 export async function getPlatformInfo(): Promise<PlatformInfo | null> {
   if (!isTauri()) return null
-  return invoke<PlatformInfo>("platform_info")
+  const [build, os] = await Promise.all([
+    invoke<Pick<PlatformInfo, "platform" | "architecture" | "appVersion">>("platform_info"),
+    import("@tauri-apps/plugin-os"),
+  ])
+  return {
+    ...build,
+    platform: os.platform(),
+    architecture: os.arch(),
+    osType: os.type(),
+    osVersion: os.version(),
+    family: os.family(),
+    locale: await os.locale(),
+    executableExtension: os.exeExtension(),
+  }
+}
+
+export type AppWindowPosition =
+  | "top-left"
+  | "top-center"
+  | "top-right"
+  | "left-center"
+  | "center"
+  | "right-center"
+  | "bottom-left"
+  | "bottom-center"
+  | "bottom-right"
+
+export async function moveAppWindow(position: AppWindowPosition): Promise<boolean> {
+  if (!isTauri()) return false
+  const { moveWindow, Position } = await import("@tauri-apps/plugin-positioner")
+  const positions = {
+    "top-left": Position.TopLeft,
+    "top-center": Position.TopCenter,
+    "top-right": Position.TopRight,
+    "left-center": Position.LeftCenter,
+    center: Position.Center,
+    "right-center": Position.RightCenter,
+    "bottom-left": Position.BottomLeft,
+    "bottom-center": Position.BottomCenter,
+    "bottom-right": Position.BottomRight,
+  }
+  await moveWindow(positions[position])
+  return true
+}
+
+export async function saveAppWindowState(): Promise<boolean> {
+  if (!isTauri()) return false
+  const { saveWindowState, StateFlags } = await import("@tauri-apps/plugin-window-state")
+  const flags = (StateFlags.ALL & ~StateFlags.DECORATIONS) as WindowStateFlags
+  await saveWindowState(flags)
+  return true
+}
+
+export async function restoreAppWindowState(): Promise<boolean> {
+  if (!isTauri()) return false
+  const { restoreStateCurrent, StateFlags } = await import("@tauri-apps/plugin-window-state")
+  const flags = (StateFlags.ALL & ~StateFlags.DECORATIONS) as WindowStateFlags
+  await restoreStateCurrent(flags)
+  return true
+}
+
+async function withCurrentWindow(
+  action: (
+    appWindow: ReturnType<typeof import("@tauri-apps/api/window").getCurrentWindow>
+  ) => Promise<void> | void
+): Promise<boolean> {
+  if (!isTauri()) return false
+  const { getCurrentWindow } = await import("@tauri-apps/api/window")
+  await action(getCurrentWindow())
+  return true
+}
+
+export function minimizeAppWindow(): Promise<boolean> {
+  return withCurrentWindow((appWindow) => appWindow.minimize())
+}
+
+export function toggleMaximizeAppWindow(): Promise<boolean> {
+  return withCurrentWindow((appWindow) => appWindow.toggleMaximize())
+}
+
+export function closeAppWindow(): Promise<boolean> {
+  return withCurrentWindow((appWindow) => appWindow.close())
+}
+
+export type SingleInstancePayload = {
+  requestId: number
+  args: string[]
+  cwd: string
+}
+
+const appRouteRoots = [
+  "/uavs",
+  "/map",
+  "/voice",
+  "/alerts",
+  "/logs",
+  "/pods",
+  "/users",
+  "/goods",
+  "/orders",
+  "/tasks",
+  "/settings",
+] as const
+
+export function extractSingleInstanceRoute(args: string[]): string | null {
+  const route = args.find((arg) => arg.startsWith("--route="))?.slice("--route=".length)
+  if (!route || !route.startsWith("/") || route.startsWith("//") || route.includes("\\")) {
+    return null
+  }
+  try {
+    const url = new URL(route, "https://zhiyuan.local")
+    if (url.origin !== "https://zhiyuan.local") return null
+    if (
+      url.pathname !== "/" &&
+      !appRouteRoots.some((root) => url.pathname === root || url.pathname.startsWith(`${root}/`))
+    ) {
+      return null
+    }
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return null
+  }
+}
+
+export async function listenForSecondInstance(
+  callback: (payload: SingleInstancePayload) => void
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined
+  const { listen } = await import("@tauri-apps/api/event")
+  const delivered = new Set<number>()
+  const deliver = (payload: SingleInstancePayload) => {
+    if (delivered.has(payload.requestId)) return
+    delivered.add(payload.requestId)
+    callback(payload)
+  }
+  const unlisten = await listen<SingleInstancePayload>("single-instance", (event) => {
+    deliver(event.payload)
+    void invoke("acknowledge_single_instance_launch", {
+      requestId: event.payload.requestId,
+    }).catch(() => undefined)
+  })
+  try {
+    const pending = await invoke<SingleInstancePayload[]>("take_pending_single_instance_launches")
+    pending.forEach(deliver)
+    return unlisten
+  } catch (error) {
+    unlisten()
+    throw error
+  }
 }
 
 export type UpdateCheckResult = {

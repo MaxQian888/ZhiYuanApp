@@ -26,5 +26,11 @@ tauri-plugin-log = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-stronghold = "2"
 
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-os = "2.3.2"
+tauri-plugin-positioner = "2.3.3"
+tauri-plugin-single-instance = "2.4.3"
+tauri-plugin-window-state = "2.4.1"
+
 [profile.dev.package.scrypt]
 opt-level = 3

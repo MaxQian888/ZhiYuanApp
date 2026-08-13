@@ -4,6 +4,7 @@ import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 import {
   Activity,
   AlertTriangle,
@@ -27,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Spinner } from "@/components/ui/spinner"
+import { DesktopTitlebar } from "@/components/product/desktop-titlebar"
 import {
   CommandDialog,
   CommandEmpty,
@@ -40,6 +42,8 @@ import { useCopy } from "@/lib/i18n-product"
 import { api } from "@/lib/api/client"
 import { isRemoteApi } from "@/lib/env"
 import { syncResourceKeys } from "@/lib/sync-state"
+import { useTauriRuntime } from "@/hooks/use-tauri-runtime"
+import { extractSingleInstanceRoute, listenForSecondInstance } from "@/lib/tauri"
 import { useProductStore } from "@/stores/product-store"
 
 const nav = [
@@ -78,6 +82,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [remoteResults, setRemoteResults] = useState<Awaited<ReturnType<typeof api.search>>>([])
+  const desktopRuntime = useTauriRuntime()
   const locale = useProductStore((state) => state.locale)
   const setLocale = useProductStore((state) => state.setLocale)
   const uavs = useProductStore((state) => state.uavs)
@@ -92,6 +97,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (item) => pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
   )
   const routeLabel = activeItem ? copy[activeItem.key] : pathname === "/map" ? copy.map : null
+
+  useEffect(() => {
+    if (!desktopRuntime) return
+    let active = true
+    let stopListening: (() => void) | undefined
+    void listenForSecondInstance((payload) => {
+      const route = extractSingleInstanceRoute(payload.args)
+      toast.info(
+        locale === "zh-CN"
+          ? route
+            ? "已接收新的启动请求并打开目标页面"
+            : "智鸢已在运行，现有窗口已恢复到前台"
+          : route
+            ? "A new launch request opened its target page"
+            : "ZhiYuan is already running; this window is now in front"
+      )
+      if (route) router.push(route)
+    })
+      .then((unlisten) => {
+        if (active) stopListening = unlisten
+        else unlisten()
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error)
+        toast.error(
+          locale === "zh-CN"
+            ? `单实例事件监听失败：${detail}`
+            : `Single-instance event listener failed: ${detail}`
+        )
+      })
+    return () => {
+      active = false
+      stopListening?.()
+    }
+  }, [desktopRuntime, locale, router])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -192,7 +232,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="app-frame">
+    <div className={desktopRuntime ? "app-frame is-desktop" : "app-frame"}>
+      {desktopRuntime && <DesktopTitlebar />}
       <header className="command-bar">
         <Link href="/" className="brand" aria-label={`${copy.brand} ${copy.console}`}>
           <span className="brand-mark" aria-hidden="true">

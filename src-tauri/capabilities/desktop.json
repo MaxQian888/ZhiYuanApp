@@ -1,8 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop-extras",
-  "description": "Desktop-only permissions. Uncomment entries below as you adopt plugins (e.g., clipboard-manager, fs, dialog). Keep default.json minimal; put feature-scoped permissions here.",
+  "description": "Desktop window management and operating-system information permissions.",
   "platforms": ["linux", "macOS", "windows"],
   "windows": ["main"],
-  "permissions": []
+  "permissions": [
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "os:default",
+    "positioner:default",
+    "window-state:default"
+  ]
 }

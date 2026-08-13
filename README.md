@@ -7,7 +7,7 @@
 ## 技术栈
 
 - Next.js 16 static export、React 19、TypeScript、Tailwind v4、TanStack Query、Zustand、Zod
-- Tauri 2，Stronghold 加密保存桌面 refresh token，Updater 在配置 manifest/pubkey 后启用
+- Tauri 2，Stronghold 加密保存桌面 refresh token，Updater 在配置 manifest/pubkey 后启用，并提供无边框窗口、单实例、窗口定位、状态恢复与系统信息
 - Java 17、Spring Boot 4.0.2、MyBatis-Plus 3.5.17 Boot 4 starter、Flyway、MySQL
 - Jest、MockMvc/JUnit、Playwright
 
@@ -59,6 +59,14 @@ cd .. && pnpm tauri build
 ```
 
 移动端验收宽度为 320、375、414、768 px，桌面补充 800×600 与 1440 px。更新服务未配置时，产品会明确显示“更新服务未配置”，不会伪报最新版本。
+
+### 桌面窗口能力
+
+- 主窗口采用保留阴影与边缘缩放的无边框布局；自定义标题栏支持拖拽、双击最大化、最小化、还原和关闭，Web/PWA 不渲染该标题栏。
+- 进程保持单实例。重复启动会恢复、显示并聚焦现有窗口，同时把启动参数和工作目录转交前端；`--route=/orders` 形式的受信站内路由会直接打开对应页面，外部 URL 会被拒绝。
+- 窗口尺寸、位置、最大化、可见性和全屏状态会自动持久化；装饰模式始终由应用配置固定为无边框。设置页可立即保存或恢复，并可把窗口定位到当前显示器的九个标准位置。
+- 设置页通过 OS Information 插件显示系统类型、版本、家族、架构、系统语言和可执行扩展名。主机名权限保持关闭，避免无必要暴露设备标识。
+- `positioner`、`single-instance` 和 `window-state` 仅编译进 macOS、Windows、Linux；移动端与 Web 构建不调用这些桌面 API。
 
 ## 安全与生产配置
 
