@@ -89,7 +89,7 @@
     "jest-junit": "^17.0.0",
     "lint-staged": "^17.0.4",
     "msw": "^2.12.10",
-    "prettier": "^3.8.3",
+    "prettier": "^3.9.6",
     "shadcn": "^4.7.0",
     "tailwindcss": "^4.3.0",
     "ts-jest": "^29.4.11",
