@@ -1,0 +1,2 @@
+ALTER TABLE admins ADD COLUMN token_version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE admins ADD CONSTRAINT uq_admin_phone UNIQUE (phone);

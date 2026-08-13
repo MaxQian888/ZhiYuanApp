@@ -49,7 +49,8 @@ public class UavController {
         if(!Set.of("MANUAL","VOICE").contains(body.source()))throw new IllegalArgumentException("Unsupported source");
         String commandId=UUID.randomUUID().toString();
         Models.ControlCommand command=new Models.ControlCommand(commandId,id,body.type(),"QUEUED",body.source(),body.transcript(),OffsetDateTime.now(ZoneOffset.ofHours(8)).withNano(0));
-        store.saveCommand(command);
+        long operatorId = authentication == null ? 1 : Long.parseLong(authentication.getName());
+        store.saveCommand(command, operatorId);
         store.commandStatus(commandId,"SENT");
         adapter.send(id,body.type()).orTimeout(8,TimeUnit.SECONDS).whenComplete((status,error)->store.commandStatus(commandId,error==null?status:"TIMEOUT"));
         return ResponseEntity.accepted().body(ApiResponse.accepted(Map.of("commandId",commandId,"status","QUEUED","adapter",adapter.providerName())));
@@ -59,7 +60,13 @@ public class UavController {
     public SseEmitter telemetry(){
         SseEmitter emitter=new SseEmitter(0L);
         var scheduler=Executors.newSingleThreadScheduledExecutor();
-        Runnable send=()->{try{emitter.send(SseEmitter.event().name("telemetry").data(store.uavs("", "", "")));emitter.send(SseEmitter.event().name("heartbeat").data(Map.of("at",OffsetDateTime.now(ZoneOffset.UTC))));}catch(IOException exception){scheduler.shutdown();emitter.complete();}};
+        Runnable send=()->{try{
+            emitter.send(SseEmitter.event().name("telemetry").data(store.uavs("", "", "")));
+            emitter.send(SseEmitter.event().name("alert").data(store.alerts("")));
+            emitter.send(SseEmitter.event().name("command-status").data(store.commands()));
+            emitter.send(SseEmitter.event().name("task-status").data(store.tasks("")));
+            emitter.send(SseEmitter.event().name("heartbeat").data(Map.of("at",OffsetDateTime.now(ZoneOffset.UTC))));
+        }catch(IOException exception){scheduler.shutdown();emitter.complete();}};
         scheduler.scheduleAtFixedRate(send,0,5,TimeUnit.SECONDS);
         emitter.onCompletion(scheduler::shutdown); emitter.onTimeout(scheduler::shutdown); emitter.onError(error->scheduler.shutdown());
         return emitter;

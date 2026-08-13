@@ -22,6 +22,7 @@ import {
   Users,
   Warehouse,
 } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import {
   CommandDialog,
   CommandEmpty,
@@ -32,20 +33,29 @@ import {
   CommandShortcut,
 } from "@/components/ui/command"
 import { useCopy } from "@/lib/i18n-product"
+import { api } from "@/lib/api/client"
+import { isRemoteApi } from "@/lib/env"
 import { useProductStore } from "@/stores/product-store"
 
 const nav = [
-  { href: "/", key: "dashboard", icon: Home },
-  { href: "/uavs", key: "uavs", icon: Plane },
-  { href: "/voice", key: "voice", icon: Mic },
-  { href: "/alerts", key: "alerts", icon: AlertTriangle },
-  { href: "/logs", key: "logs", icon: FileClock },
-  { href: "/pods", key: "pods", icon: Warehouse },
-  { href: "/users", key: "users", icon: Users },
-  { href: "/goods", key: "goods", icon: Package },
-  { href: "/orders", key: "orders", icon: ClipboardList },
-  { href: "/tasks", key: "tasks", icon: Boxes },
-  { href: "/settings", key: "settings", icon: Settings },
+  { href: "/", key: "dashboard", icon: Home, code: "01" },
+  { href: "/uavs", key: "uavs", icon: Plane, code: "02" },
+  { href: "/voice", key: "voice", icon: Mic, code: "03" },
+  { href: "/alerts", key: "alerts", icon: AlertTriangle, code: "04" },
+  { href: "/logs", key: "logs", icon: FileClock, code: "05" },
+  { href: "/pods", key: "pods", icon: Warehouse, code: "06" },
+  { href: "/users", key: "users", icon: Users, code: "07" },
+  { href: "/goods", key: "goods", icon: Package, code: "08" },
+  { href: "/orders", key: "orders", icon: ClipboardList, code: "09" },
+  { href: "/tasks", key: "tasks", icon: Boxes, code: "10" },
+  { href: "/settings", key: "settings", icon: Settings, code: "11" },
+] as const
+
+const navGroups = [
+  { label: { "zh-CN": "监控", en: "Monitor" }, items: nav.slice(0, 4) },
+  { label: { "zh-CN": "运维", en: "Operations" }, items: nav.slice(4, 6) },
+  { label: { "zh-CN": "业务", en: "Business" }, items: nav.slice(6, 10) },
+  { label: { "zh-CN": "系统", en: "System" }, items: nav.slice(10) },
 ] as const
 
 const mobileNav = [
@@ -60,13 +70,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [remoteResults, setRemoteResults] = useState<Awaited<ReturnType<typeof api.search>>>([])
   const locale = useProductStore((state) => state.locale)
   const setLocale = useProductStore((state) => state.setLocale)
   const uavs = useProductStore((state) => state.uavs)
   const users = useProductStore((state) => state.users)
   const orders = useProductStore((state) => state.orders)
   const goods = useProductStore((state) => state.goods)
+  const realtimeState = useProductStore((state) => state.realtimeState)
   const copy = useCopy(locale)
+  const activeItem = nav.find(
+    (item) => pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+  )
+  const routeLabel = activeItem ? copy[activeItem.key] : pathname === "/map" ? copy.map : null
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -79,6 +96,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [])
 
+  useEffect(() => {
+    if (!isRemoteApi || !query.trim()) {
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void api
+        .search(query.trim())
+        .then((items) => !controller.signal.aborted && setRemoteResults(items))
+        .catch(() => !controller.signal.aborted && setRemoteResults([]))
+    }, 200)
+    return () => {
+      controller.abort()
+      window.clearTimeout(timer)
+    }
+  }, [query])
+
   const searchGroups = useMemo(
     () => [
       {
@@ -90,44 +124,58 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           href: item.href,
         })),
       },
-      {
-        label: copy.uavs,
-        items: uavs.map((item) => ({
-          id: `uav-${item.id}`,
-          label: `${item.code} · ${item.name}`,
-          meta: item.model,
-          href: `/uavs/detail?id=${item.id}`,
-        })),
-      },
-      {
-        label: copy.users,
-        items: users.map((item) => ({
-          id: `user-${item.id}`,
-          label: item.username,
-          meta: item.phone,
-          href: `/users?id=${item.id}`,
-        })),
-      },
-      {
-        label: copy.orders,
-        items: orders.map((item) => ({
-          id: `order-${item.id}`,
-          label: item.orderNo,
-          meta: item.status,
-          href: `/orders/detail?id=${item.id}`,
-        })),
-      },
-      {
-        label: copy.goods,
-        items: goods.map((item) => ({
-          id: `goods-${item.id}`,
-          label: item.name,
-          meta: item.category,
-          href: `/goods?id=${item.id}`,
-        })),
-      },
+      ...(isRemoteApi && query.trim()
+        ? [
+            {
+              label: locale === "zh-CN" ? "业务记录" : "Business records",
+              items: (query.trim() ? remoteResults : []).map((item) => ({
+                id: `${item.type}-${item.id}`,
+                label: item.title,
+                meta: item.type.toUpperCase(),
+                href: item.href,
+              })),
+            },
+          ]
+        : [
+            {
+              label: copy.uavs,
+              items: uavs.map((item) => ({
+                id: `uav-${item.id}`,
+                label: `${item.code} · ${item.name}`,
+                meta: item.model,
+                href: `/uavs/detail?id=${item.id}`,
+              })),
+            },
+            {
+              label: copy.users,
+              items: users.map((item) => ({
+                id: `user-${item.id}`,
+                label: item.username,
+                meta: item.phone,
+                href: `/users?id=${item.id}`,
+              })),
+            },
+            {
+              label: copy.orders,
+              items: orders.map((item) => ({
+                id: `order-${item.id}`,
+                label: item.orderNo,
+                meta: item.status,
+                href: `/orders/detail?id=${item.id}`,
+              })),
+            },
+            {
+              label: copy.goods,
+              items: goods.map((item) => ({
+                id: `goods-${item.id}`,
+                label: item.name,
+                meta: item.category,
+                href: `/goods?id=${item.id}`,
+              })),
+            },
+          ]),
     ],
-    [copy, goods, locale, orders, uavs, users]
+    [copy, goods, locale, orders, query, remoteResults, uavs, users]
   )
 
   const go = (href: string) => {
@@ -147,7 +195,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <small>{copy.console}</small>
           </span>
         </Link>
-        <button
+        <Button
+          variant="outline"
           className="search-trigger"
           type="button"
           onClick={() => setOpen(true)}
@@ -156,13 +205,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Search size={17} aria-hidden="true" />
           <span>{copy.search}</span>
           <kbd>⌘ K</kbd>
-        </button>
+        </Button>
         <div className="top-actions">
+          {routeLabel && (
+            <span className="route-context" aria-hidden="true">
+              OPS / {routeLabel}
+            </span>
+          )}
           <span className="connection">
             <i aria-hidden="true" />
-            {copy.live} · {copy.simulator}
+            {realtimeState === "live"
+              ? copy.live
+              : realtimeState === "reconnecting"
+                ? locale === "zh-CN"
+                  ? "重连中"
+                  : "Reconnecting"
+                : locale === "zh-CN"
+                  ? "离线"
+                  : "Offline"}{" "}
+            · {copy.simulator}
           </span>
-          <button
+          <Button
+            variant="outline"
+            size="icon"
             className="icon-action"
             type="button"
             onClick={() => setLocale(locale === "zh-CN" ? "en" : "zh-CN")}
@@ -170,28 +235,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Languages size={18} />
             <span>{locale === "zh-CN" ? "EN" : "中"}</span>
-          </button>
+          </Button>
         </div>
       </header>
       <aside className="side-nav" aria-label={locale === "zh-CN" ? "主导航" : "Primary navigation"}>
-        {nav.map(({ href, key, icon: Icon }) => (
-          <Link
-            key={href}
-            href={href}
-            className={
-              pathname === href || (href !== "/" && pathname.startsWith(href))
-                ? "nav-link is-active"
-                : "nav-link"
-            }
-          >
-            <Icon size={18} aria-hidden="true" />
-            <span>{copy[key]}</span>
-          </Link>
+        {navGroups.map((group) => (
+          <div className="nav-group" key={group.label.en}>
+            <span className="nav-group-label">{group.label[locale]}</span>
+            {group.items.map(({ href, key, icon: Icon, code }) => (
+              <Link
+                key={href}
+                href={href}
+                className={
+                  pathname === href || (href !== "/" && pathname.startsWith(href))
+                    ? "nav-link is-active"
+                    : "nav-link"
+                }
+              >
+                <Icon size={18} aria-hidden="true" />
+                <span>{copy[key]}</span>
+                <small aria-hidden="true">{code}</small>
+              </Link>
+            ))}
+          </div>
         ))}
         <div className="side-status">
           <Activity size={16} />
           <span>API</span>
-          <strong>{process.env.NEXT_PUBLIC_API_MODE === "remote" ? "REMOTE" : "SIM"}</strong>
+          <strong>{isRemoteApi ? "REMOTE" : "SIM"}</strong>
         </div>
       </aside>
       <div className="app-content">{children}</div>
@@ -225,7 +296,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             : "Search and open pages or business records"
         }
       >
-        <CommandInput placeholder={copy.search} />
+        <CommandInput
+          placeholder={copy.search}
+          value={query}
+          onValueChange={(value) => {
+            setQuery(value)
+            if (!value.trim()) setRemoteResults([])
+          }}
+        />
         <CommandList>
           <CommandEmpty>{copy.noResults}</CommandEmpty>
           {searchGroups.map((group) => (

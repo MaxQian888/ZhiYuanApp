@@ -1,8 +1,10 @@
 package com.zhiyuan.api;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.UUID;
 
-public record ApiResponse<T>(int code, String message, T data, String traceId) {
+public record ApiResponse<T>(int code, String message,
+                             @JsonInclude(JsonInclude.Include.ALWAYS) T data, String traceId) {
     public static <T> ApiResponse<T> ok(T data) {
         return new ApiResponse<>(0, "OK", data, UUID.randomUUID().toString());
     }

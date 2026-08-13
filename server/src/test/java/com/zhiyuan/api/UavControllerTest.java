@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -16,8 +18,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(UavController.class)
-@Import({PlatformStore.class, SimulatorUavAdapter.class, JwtService.class})
+@Import({UavControllerTest.StoreConfiguration.class, SimulatorUavAdapter.class, JwtService.class})
 class UavControllerTest {
+    @TestConfiguration
+    static class StoreConfiguration {
+        @Bean PlatformStore platformStore() { return new PlatformStore(); }
+    }
+
     @Autowired MockMvc mvc;
 
     @Test

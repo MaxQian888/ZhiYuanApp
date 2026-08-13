@@ -16,9 +16,11 @@ export default defineConfig({
     { name: "mobile-375", use: { viewport: { width: 375, height: 812 }, isMobile: true } },
     { name: "mobile-414", use: { viewport: { width: 414, height: 896 }, isMobile: true } },
     { name: "tablet-768", use: { viewport: { width: 768, height: 1024 } } },
+    { name: "desktop-800", use: { viewport: { width: 800, height: 600 } } },
+    { name: "desktop-1440", use: { viewport: { width: 1440, height: 900 } } },
   ],
   webServer: {
-    command: "pnpm dev",
+    command: "NEXT_PUBLIC_API_MODE=simulator pnpm dev",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

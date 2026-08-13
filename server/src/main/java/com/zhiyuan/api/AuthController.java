@@ -1,9 +1,11 @@
 package com.zhiyuan.api;
 
 import com.auth0.jwt.interfaces.DecodedJWT;
+import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.zhiyuan.domain.Models;
 import com.zhiyuan.persistence.AdminEntity;
 import com.zhiyuan.persistence.AdminMapper;
+import com.zhiyuan.persistence.RefreshSessionRepository;
 import com.zhiyuan.security.JwtService;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
@@ -11,6 +13,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.core.Authentication;
@@ -24,13 +27,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 
@@ -39,19 +42,19 @@ import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 public class AuthController {
     public record LoginRequest(@NotBlank String username, @NotBlank String password, String client) {}
     public record PasswordRequest(@NotBlank String currentPassword, @NotBlank String newPassword) {}
-    public record ProfileRequest(@NotBlank String displayName, @Pattern(regexp = "^1[3-9]\\d{9}$") String phone) {}
+    public record ProfileRequest(@NotBlank @Size(max = 80) String displayName,
+                                 @Pattern(regexp = "^1[3-9]\\d{9}$") String phone) {}
     public record LoginResult(String accessToken, String refreshToken, Models.Staff staff) {}
-    private record StoredSession(String id, long staffId, String refreshToken, String userAgent, String ipAddress, OffsetDateTime createdAt, OffsetDateTime expiresAt) {}
-
     private final AdminMapper admins;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
-    private final Map<String, StoredSession> sessions = new ConcurrentHashMap<>();
+    private final RefreshSessionRepository sessions;
 
-    public AuthController(AdminMapper admins, PasswordEncoder passwordEncoder, JwtService jwtService) {
+    public AuthController(AdminMapper admins, PasswordEncoder passwordEncoder, JwtService jwtService, RefreshSessionRepository sessions) {
         this.admins = admins;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.sessions = sessions;
     }
 
     @PostMapping("/login")
@@ -63,30 +66,46 @@ public class AuthController {
         String access = jwtService.accessToken(admin);
         String refresh = jwtService.refreshToken(admin);
         DecodedJWT decoded = jwtService.verify(refresh, "refresh");
-        sessions.put(decoded.getId(), new StoredSession(decoded.getId(), admin.getId(), refresh, userAgent(request), request.getRemoteAddr(), OffsetDateTime.now(ZoneOffset.UTC), decoded.getExpiresAtAsInstant().atOffset(ZoneOffset.UTC)));
-        response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie(refresh, request.isSecure()).toString());
-        String exposedRefresh = "tauri".equalsIgnoreCase(body.client()) ? refresh : null;
+        sessions.create(decoded.getId(), admin.getId(), refresh, userAgent(request), request.getRemoteAddr(), OffsetDateTime.now(ZoneOffset.UTC), decoded.getExpiresAtAsInstant().atOffset(ZoneOffset.UTC));
+        boolean desktopClient = "tauri".equalsIgnoreCase(body.client());
+        if (!desktopClient) response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie(refresh, request.isSecure()).toString());
+        String exposedRefresh = desktopClient ? refresh : null;
         return ApiResponse.ok(new LoginResult(access, exposedRefresh, staff(admin)));
     }
 
     @PostMapping("/refresh")
+    @Transactional
     public ApiResponse<Map<String, String>> refresh(HttpServletRequest request, HttpServletResponse response) {
-        String token = cookie(request, "zhiyuan_refresh");
-        if (token == null) token = request.getHeader("X-Refresh-Token");
+        String desktopToken = request.getHeader("X-Refresh-Token");
+        boolean desktopClient = desktopToken != null && !desktopToken.isBlank();
+        String token = desktopClient ? desktopToken : cookie(request, "zhiyuan_refresh");
+        DecodedJWT decoded;
         try {
-            DecodedJWT decoded = jwtService.verify(token, "refresh");
-            StoredSession old = sessions.remove(decoded.getId());
-            if (old == null) throw new IllegalArgumentException("Session revoked");
-            AdminEntity admin = admins.findById(Long.parseLong(decoded.getSubject()));
-            String access = jwtService.accessToken(admin);
-            String refresh = jwtService.refreshToken(admin);
-            DecodedJWT next = jwtService.verify(refresh, "refresh");
-            sessions.put(next.getId(), new StoredSession(next.getId(), admin.getId(), refresh, old.userAgent(), old.ipAddress(), OffsetDateTime.now(ZoneOffset.UTC), next.getExpiresAtAsInstant().atOffset(ZoneOffset.UTC)));
-            response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie(refresh, request.isSecure()).toString());
-            return ApiResponse.ok(Map.of("accessToken", access, "refreshToken", refresh));
-        } catch (RuntimeException exception) {
+            decoded = jwtService.verify(token, "refresh");
+        } catch (JWTVerificationException | IllegalArgumentException exception) {
             throw new ResponseStatusException(UNAUTHORIZED, "Refresh session expired");
         }
+        RefreshSessionRepository.StoredSession old = sessions.consume(decoded.getId(), token);
+        if (old == null) throw new ResponseStatusException(UNAUTHORIZED, "Refresh session expired");
+        long staffId;
+        try {
+            staffId = Long.parseLong(decoded.getSubject());
+        } catch (NumberFormatException exception) {
+            throw new ResponseStatusException(UNAUTHORIZED, "Refresh session expired");
+        }
+        AdminEntity admin = admins.findById(staffId);
+        Long tokenVersion = decoded.getClaim("tokenVersion").asLong();
+        if (admin == null || !Boolean.TRUE.equals(admin.getEnabled()) || tokenVersion == null ||
+            !tokenVersion.equals(admin.getTokenVersion())) throw new ResponseStatusException(UNAUTHORIZED, "Refresh session expired");
+        String access = jwtService.accessToken(admin);
+        String refresh = jwtService.refreshToken(admin);
+        DecodedJWT next = jwtService.verify(refresh, "refresh");
+        sessions.create(next.getId(), admin.getId(), refresh, old.userAgent(), old.ipAddress(), OffsetDateTime.now(ZoneOffset.UTC), next.getExpiresAtAsInstant().atOffset(ZoneOffset.UTC));
+        if (!desktopClient) response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie(refresh, request.isSecure()).toString());
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("accessToken", access);
+        if (desktopClient) result.put("refreshToken", refresh);
+        return ApiResponse.ok(result);
     }
 
     @PostMapping("/logout")
@@ -109,12 +128,15 @@ public class AuthController {
     }
 
     @PatchMapping("/password")
-    public ApiResponse<Void> password(Authentication authentication, @Valid @RequestBody PasswordRequest body) {
+    @Transactional
+    public ApiResponse<Void> password(Authentication authentication, @Valid @RequestBody PasswordRequest body,
+                                      HttpServletRequest request, HttpServletResponse response) {
         AdminEntity admin = current(authentication);
         if (!passwordEncoder.matches(body.currentPassword(), admin.getPasswordHash())) throw new ResponseStatusException(UNAUTHORIZED, "Current password is incorrect");
         if (body.newPassword().length() < 8) throw new IllegalArgumentException("New password must contain at least 8 characters");
         admins.updatePassword(admin.getId(), passwordEncoder.encode(body.newPassword()));
-        sessions.entrySet().removeIf(entry -> entry.getValue().staffId() == admin.getId());
+        sessions.revokeAll(admin.getId());
+        response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie("", request.isSecure()).mutate().maxAge(0).build().toString());
         return ApiResponse.ok(null);
     }
 
@@ -122,16 +144,13 @@ public class AuthController {
     public ApiResponse<List<Models.Session>> sessions(Authentication authentication, HttpServletRequest request) {
         long staffId = current(authentication).getId();
         String current = refreshToken(request);
-        return ApiResponse.ok(sessions.values().stream().filter(s -> s.staffId() == staffId)
-            .map(s -> new Models.Session(s.id(), s.userAgent(), s.ipAddress(), s.createdAt(), s.expiresAt(), s.refreshToken().equals(current))).toList());
+        return ApiResponse.ok(sessions.findActive(staffId, current));
     }
 
     @DeleteMapping("/sessions")
     public ApiResponse<Void> revokeSession(Authentication authentication, @RequestParam String id) {
         long staffId = current(authentication).getId();
-        StoredSession session = sessions.get(id);
-        if (session == null || session.staffId() != staffId) throw new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "Session not found");
-        sessions.remove(id);
+        if (!sessions.revoke(staffId, id)) throw new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "Session not found");
         return ApiResponse.ok(null);
     }
 
@@ -185,8 +204,9 @@ public class AuthController {
             return;
         }
         try {
-            sessions.remove(jwtService.verify(token, "refresh").getId());
-        } catch (RuntimeException ignored) {
+            String sessionId = jwtService.verify(token, "refresh").getId();
+            sessions.revokeByToken(sessionId, token);
+        } catch (JWTVerificationException | IllegalArgumentException ignored) {
             // Logout is intentionally idempotent for expired or malformed refresh tokens.
         }
     }

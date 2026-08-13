@@ -6,6 +6,8 @@
 import "@testing-library/jest-dom"
 import React from "react"
 
+process.env.NEXT_PUBLIC_API_MODE = "simulator"
+
 type MockNextImageProps = React.ComponentPropsWithoutRef<"img"> & {
   priority?: boolean
   fill?: boolean

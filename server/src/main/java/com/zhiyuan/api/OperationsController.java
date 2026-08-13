@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -32,7 +33,10 @@ public class OperationsController {
     @PatchMapping("/alerts/{id}/resolve") public ApiResponse<Models.Alert> resolve(@PathVariable long id){return ApiResponse.ok(store.resolveAlert(id));}
     @GetMapping("/pods") public ApiResponse<List<Models.Pod>> pods(){return ApiResponse.ok(store.pods());}
     @PatchMapping("/pods/{id}") public ApiResponse<Models.Pod> pod(@PathVariable long id,@Valid @RequestBody PodRequest body){return ApiResponse.ok(store.updatePod(id,body.doorStatus(),body.uavId()));}
-    @GetMapping("/device-bindings") public ApiResponse<List<Models.Binding>> bindings(){return ApiResponse.ok(store.bindings());}
-    @PostMapping("/device-bindings") public ApiResponse<Models.Binding> bind(@Valid @RequestBody BindingRequest body){return ApiResponse.ok(store.bind(body.staffId(),body.uavId()));}
-    @DeleteMapping("/device-bindings/{id}") public ApiResponse<Void> unbind(@PathVariable long id){store.unbind(id);return ApiResponse.ok(null);}
+    @GetMapping("/device-bindings") public ApiResponse<List<Models.Binding>> bindings(Authentication authentication){long staffId=staffId(authentication);return ApiResponse.ok(isAdmin(authentication)?store.bindings():store.bindings().stream().filter(binding->binding.staffId()==staffId).toList());}
+    @PostMapping("/device-bindings") public ApiResponse<Models.Binding> bind(Authentication authentication,@Valid @RequestBody BindingRequest body){long current=staffId(authentication);long target=isAdmin(authentication)?body.staffId():current;return ApiResponse.ok(store.bind(target,body.uavId()));}
+    @DeleteMapping("/device-bindings/{id}") public ApiResponse<Void> unbind(Authentication authentication,@PathVariable long id){Models.Binding binding=store.bindings().stream().filter(item->item.id()==id).findFirst().orElseThrow(()->new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,"Binding not found"));if(!isAdmin(authentication)&&binding.staffId()!=staffId(authentication))throw new ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN,"Cannot revoke another staff member's binding");store.unbind(id);return ApiResponse.ok(null);}
+
+    private static long staffId(Authentication authentication){return Long.parseLong(authentication.getName());}
+    private static boolean isAdmin(Authentication authentication){return authentication.getAuthorities().stream().anyMatch(authority->"ROLE_ADMIN".equals(authority.getAuthority()));}
 }

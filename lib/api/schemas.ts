@@ -4,11 +4,16 @@ const dateTime = z.string().datetime({ offset: true })
 export const roleSchema = z.enum(["admin", "manager"])
 export const staffSchema = z.object({
   id: z.number().int().positive(),
-  username: z.string(),
-  displayName: z.string(),
+  username: z
+    .string()
+    .min(3)
+    .max(32)
+    .regex(/^[A-Za-z0-9._-]+$/),
+  displayName: z.string().trim().min(1).max(80),
   role: roleSchema,
-  phone: z.string(),
+  phone: z.string().regex(/^1[3-9]\d{9}$/),
 })
+export const staffAccountSchema = staffSchema.extend({ enabled: z.boolean() })
 export const uavStatusSchema = z.enum(["ONLINE", "OFFLINE", "FLYING", "CHARGING"])
 export const uavSchema = z.object({
   id: z.number().int().positive(),
@@ -92,6 +97,9 @@ export const orderSchema = z.object({
   totalPrice: z.number().nonnegative(),
   status: z.enum(["CREATED", "DISPATCHING", "DELIVERING", "FINISHED", "CANCELLED", "ERROR"]),
   createdAt: dateTime,
+  addressSnapshot: z
+    .object({ receiverName: z.string(), receiverPhone: z.string(), detail: z.string() })
+    .optional(),
   items: z.array(orderItemSchema),
 })
 export const taskSchema = z.object({
@@ -101,6 +109,7 @@ export const taskSchema = z.object({
   taskStatus: z.enum(["WAITING", "FLYING", "ARRIVED", "FAILED"]),
   startTime: dateTime.optional(),
   endTime: dateTime.optional(),
+  failureReason: z.string().optional(),
 })
 export const podSchema = z.object({
   id: z.number().int().positive(),
@@ -114,6 +123,7 @@ export const bindingSchema = z.object({
   staffId: z.number().int().positive(),
   uavId: z.number().int().positive(),
   boundAt: dateTime,
+  unboundAt: dateTime.optional(),
 })
 export const dashboardSchema = z.object({
   totalUav: z.number().int().nonnegative(),

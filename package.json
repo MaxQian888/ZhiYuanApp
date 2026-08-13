@@ -20,6 +20,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:e2e": "playwright test",
+    "test:e2e:remote": "playwright test --config=playwright.remote.config.ts",
     "server:test": "cd server && mvn verify",
     "docs:dev": "pnpm -F docs dev",
     "docs:build": "pnpm -F docs build",

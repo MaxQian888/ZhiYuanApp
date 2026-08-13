@@ -1,7 +1,36 @@
-import { parseApiResponse, parseSseChunk } from "@/lib/api/client"
+import {
+  api,
+  isSessionRecoverySuppressed,
+  parseApiResponse,
+  parseSseChunk,
+  resumeSessionRecovery,
+  suppressSessionRecovery,
+} from "@/lib/api/client"
 import { uavSchema } from "@/lib/api/schemas"
 
 describe("API boundary", () => {
+  afterEach(() => resumeSessionRecovery())
+
+  it("keeps automatic session recovery disabled after an explicit logout", () => {
+    suppressSessionRecovery()
+    expect(isSessionRecoverySuppressed()).toBe(true)
+    resumeSessionRecovery()
+    expect(isSessionRecoverySuppressed()).toBe(false)
+  })
+
+  it("fails safe when browser storage is unavailable", () => {
+    const getItem = jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("Storage denied", "SecurityError")
+    })
+    const setItem = jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage denied", "SecurityError")
+    })
+    expect(() => suppressSessionRecovery()).not.toThrow()
+    expect(isSessionRecoverySuppressed()).toBe(true)
+    getItem.mockRestore()
+    setItem.mockRestore()
+  })
+
   it("accepts the versioned response envelope and validates its data", () => {
     const parsed = parseApiResponse(
       {
@@ -46,5 +75,78 @@ describe("API boundary", () => {
       events: [{ event: "telemetry", data: { id: 1 } }],
       remainder: "event: heart",
     })
+  })
+
+  it("sends user mutations through the versioned API and validates the response", async () => {
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        code: 200,
+        message: "ok",
+        traceId: "trace-user",
+        data: {
+          id: 9,
+          username: "周岚",
+          phone: "13911112222",
+          createdAt: "2026-08-12T18:00:00+08:00",
+          addresses: [],
+        },
+      }),
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await expect(api.saveUser({ username: "周岚", phone: "13911112222" })).resolves.toMatchObject({
+      id: 9,
+      username: "周岚",
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/users",
+      expect.objectContaining({ method: "POST", body: '{"username":"周岚","phone":"13911112222"}' })
+    )
+  })
+
+  it("validates staff account mutations at the API boundary", async () => {
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        code: 0,
+        message: "OK",
+        traceId: "trace-staff",
+        data: {
+          id: 8,
+          username: "night.ops",
+          displayName: "夜航运营",
+          role: "manager",
+          phone: "13800000008",
+          enabled: true,
+        },
+      }),
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await expect(
+      api.createStaffAccount({
+        username: "night.ops",
+        password: "nightops123",
+        displayName: "夜航运营",
+        role: "manager",
+        phone: "13800000008",
+      })
+    ).resolves.toMatchObject({ id: 8, enabled: true })
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/admins",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          username: "night.ops",
+          password: "nightops123",
+          displayName: "夜航运营",
+          role: "manager",
+          phone: "13800000008",
+        }),
+      })
+    )
   })
 })

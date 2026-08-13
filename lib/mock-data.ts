@@ -191,6 +191,14 @@ export const seedCommands: ControlCommand[] = [
     transcript: "无人机二号返航",
     createdAt: "2026-08-12T10:20:00+08:00",
   },
+  {
+    id: "cmd-003",
+    uavId: 1,
+    type: "RETURN_HOME",
+    status: "TIMEOUT",
+    source: "MANUAL",
+    createdAt: "2026-08-12T10:24:00+08:00",
+  },
 ]
 export const seedUsers: ManagedUser[] = [
   {

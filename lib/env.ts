@@ -3,6 +3,8 @@ export type PublicEnv = {
   apiUrl: string | undefined
 }
 
+export const isRemoteApi = process.env.NEXT_PUBLIC_API_MODE !== "simulator"
+
 const REQUIRED = ["NEXT_PUBLIC_APP_NAME"] as const
 
 /**

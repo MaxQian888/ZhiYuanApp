@@ -3,6 +3,7 @@ package com.zhiyuan.config;
 import com.zhiyuan.api.ApiResponse;
 import com.zhiyuan.security.JwtAuthenticationFilter;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -50,7 +51,8 @@ public class SecurityConfig {
             .cors(cors -> {})
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/system/about", "/api/v1/system/version").permitAll()
+                .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
+                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/system/about", "/api/v1/system/version").permitAll()
                 .requestMatchers("/api/v1/admins/**").hasRole("ADMIN")
                 .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/v1/users/**", "/api/v1/goods/**").hasRole("ADMIN")
                 .anyRequest().authenticated())

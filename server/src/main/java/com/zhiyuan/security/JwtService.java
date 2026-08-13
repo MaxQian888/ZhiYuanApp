@@ -40,6 +40,7 @@ public class JwtService {
             .withSubject(String.valueOf(admin.getId()))
             .withClaim("username", admin.getUsername())
             .withClaim("role", admin.getRole())
+            .withClaim("tokenVersion", admin.getTokenVersion())
             .withClaim("type", type)
             .withIssuedAt(Instant.now())
             .withExpiresAt(expiresAt)

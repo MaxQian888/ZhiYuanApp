@@ -1,7 +1,11 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useState, useSyncExternalStore } from "react"
+import { useRouter } from "next/navigation"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
+import { useForm, useWatch } from "react-hook-form"
 import {
   AlertTriangle,
   Battery,
@@ -19,10 +23,15 @@ import {
   RotateCcw,
   Search,
   ShieldCheck,
+  UserCog,
   Warehouse,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
+import { z } from "zod"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -31,12 +40,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import { Progress } from "@/components/ui/progress"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
+import { Textarea } from "@/components/ui/textarea"
 import { AppShell } from "@/components/product/app-shell"
 import {
+  ActionTooltip,
+  ConfirmAction,
   EmptyState,
   Field,
   MetricStrip,
   PageHeader,
+  PaginationControls,
   Section,
   StatusPill,
 } from "@/components/product/primitives"
@@ -46,9 +64,13 @@ import {
   type CommandType,
   type Goods,
   type ManagedUser,
+  type StaffAccount,
   type UavStatus,
 } from "@/lib/domain"
 import { useCopy } from "@/lib/i18n-product"
+import { api } from "@/lib/api/client"
+import { resumeSessionRecovery, suppressSessionRecovery } from "@/lib/api/client"
+import { isRemoteApi } from "@/lib/env"
 import { checkForAppUpdate, getPlatformInfo, isTauri, type PlatformInfo } from "@/lib/tauri"
 import { useProductStore } from "@/stores/product-store"
 
@@ -69,6 +91,43 @@ export type ProductView =
   | "settings"
   | "login"
 
+const staffAccountFormSchema = z
+  .object({
+    id: z.number().int().positive().optional(),
+    username: z
+      .string()
+      .trim()
+      .min(3)
+      .max(32)
+      .regex(/^[A-Za-z0-9._-]+$/),
+    displayName: z.string().trim().min(1).max(80),
+    phone: z.string().regex(/^1[3-9]\d{9}$/),
+    password: z
+      .string()
+      .trim()
+      .refine((password) => !password || (password.length >= 8 && password.length <= 72)),
+    role: z.enum(["admin", "manager"]),
+    enabled: z.boolean(),
+  })
+  .superRefine((account, context) => {
+    if (!account.id && !account.password) {
+      context.addIssue({
+        code: "custom",
+        path: ["password"],
+        message: "An initial password is required",
+      })
+    }
+  })
+
+type StaffAccountForm = z.infer<typeof staffAccountFormSchema>
+
+const profileFormSchema = z.object({
+  displayName: z.string().trim().min(1).max(80),
+  phone: z.string().regex(/^1[3-9]\d{9}$/),
+})
+
+type ProfileForm = z.infer<typeof profileFormSchema>
+
 function formatDate(value: string, locale: string) {
   return new Intl.DateTimeFormat(locale, {
     month: "2-digit",
@@ -76,6 +135,60 @@ function formatDate(value: string, locale: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value))
+}
+
+function QueryLoading({ locale }: { locale: string }) {
+  return (
+    <div className="query-state" role="status">
+      <Skeleton className="query-state-skeleton" aria-hidden="true" />
+      <span>{locale === "zh-CN" ? "正在加载数据…" : "Loading data…"}</span>
+    </div>
+  )
+}
+
+function QueryError({ locale, onRetry }: { locale: string; onRetry: () => void }) {
+  return (
+    <Alert className="query-state query-error">
+      <AlertTriangle aria-hidden="true" />
+      <AlertDescription>
+        {locale === "zh-CN" ? "数据加载失败" : "Failed to load data"}
+      </AlertDescription>
+      <Button variant="outline" onClick={onRetry}>
+        {locale === "zh-CN" ? "重试" : "Retry"}
+      </Button>
+    </Alert>
+  )
+}
+
+function PendingLabel({
+  pending,
+  pendingLabel,
+  children,
+}: {
+  pending: boolean
+  pendingLabel: string
+  children: ReactNode
+}) {
+  return pending ? (
+    <>
+      <Spinner data-icon="inline-start" />
+      {pendingLabel}
+    </>
+  ) : (
+    children
+  )
+}
+
+async function executeAction<T>(action: () => Promise<T>, locale: string, success?: string) {
+  try {
+    const result = await action()
+    if (success) toast.success(success)
+    return { ok: true as const, value: result }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    toast.error(locale === "zh-CN" ? `操作失败：${detail}` : `Action failed: ${detail}`)
+    return { ok: false as const }
+  }
 }
 
 function useUrlId(fallback: number) {
@@ -105,10 +218,12 @@ function DashboardView() {
         title={copy.dashboardTitle}
         description={copy.dashboardDescription}
         actions={
-          <Link className="button button-primary" href="/uavs">
-            <Plane size={17} />
-            {copy.uavs}
-          </Link>
+          <Button asChild className="button button-primary">
+            <Link href="/uavs">
+              <Plane data-icon="inline-start" />
+              {copy.uavs}
+            </Link>
+          </Button>
         }
       />
       <MetricStrip
@@ -141,7 +256,16 @@ function DashboardView() {
           action={
             <span className="connection">
               <i />
-              {copy.live} · {copy.simulator}
+              {store.realtimeState === "live"
+                ? copy.live
+                : store.realtimeState === "reconnecting"
+                  ? store.locale === "zh-CN"
+                    ? "重连中"
+                    : "Reconnecting"
+                  : store.locale === "zh-CN"
+                    ? "离线数据"
+                    : "Offline data"}{" "}
+              · {copy.simulator}
             </span>
           }
         >
@@ -182,9 +306,18 @@ function DashboardView() {
                   <small>{formatDate(alert.occurredAt, store.locale)}</small>
                 </span>
                 <StatusPill value={alert.level} />
-                <button className="text-button" onClick={() => store.resolveAlert(alert.id)}>
+                <Button
+                  className="text-button"
+                  onClick={() =>
+                    void executeAction(
+                      () => store.resolveAlert(alert.id),
+                      store.locale,
+                      copy.acknowledge
+                    )
+                  }
+                >
                   {copy.acknowledge}
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -211,7 +344,34 @@ function UavListView() {
   const copy = useCopy(store.locale)
   const [query, setQuery] = useState("")
   const [status, setStatus] = useState<UavStatus | "ALL">("ALL")
-  const rows = filterUavs(store.uavs, query, status)
+  const [region, setRegion] = useState("ALL")
+  const [page, setPage] = useState(1)
+  const size = 10
+  const regions = [...new Set(store.uavs.map((item) => item.region))]
+  const serverPage = useQuery({
+    queryKey: ["uavs-page", query, status, region, page],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(page), size: String(size) })
+      if (query.trim()) params.set("q", query.trim())
+      if (status !== "ALL") params.set("status", status)
+      if (region !== "ALL") params.set("region", region)
+      return api.uavs(`?${params}`)
+    },
+    enabled: isRemoteApi,
+    placeholderData: (previous) => previous,
+  })
+  const filtered = filterUavs(store.uavs, query, status).filter(
+    (item) => region === "ALL" || item.region === region
+  )
+  const rows = isRemoteApi
+    ? (serverPage.data?.items ?? []).map(
+        (item) => store.uavs.find((candidate) => candidate.id === item.id) ?? item
+      )
+    : filtered.slice((page - 1) * size, page * size)
+  const total = isRemoteApi ? (serverPage.data?.total ?? 0) : filtered.length
+  const totalPages = isRemoteApi
+    ? (serverPage.data?.totalPages ?? 1)
+    : Math.max(1, Math.ceil(filtered.length / size))
   return (
     <>
       <PageHeader
@@ -222,36 +382,65 @@ function UavListView() {
             : "Search and filter the fleet, then open telemetry and controls."
         }
         actions={
-          <Link href="/map" className="button button-secondary">
-            <MapPin size={17} />
-            {copy.map}
-          </Link>
+          <Button asChild variant="outline" className="button button-secondary">
+            <Link href="/map">
+              <MapPin data-icon="inline-start" />
+              {copy.map}
+            </Link>
+          </Button>
         }
       />
       <div className="filter-bar">
         <label className="search-field">
           <Search size={17} />
-          <input
+          <Input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value)
+              setPage(1)
+            }}
             placeholder={copy.searchUav}
           />
         </label>
         <label>
           <span className="sr-only">{copy.status}</span>
-          <select
+          <NativeSelect
             value={status}
-            onChange={(event) => setStatus(event.target.value as UavStatus | "ALL")}
+            onChange={(event) => {
+              setStatus(event.target.value as UavStatus | "ALL")
+              setPage(1)
+            }}
           >
-            <option value="ALL">{copy.allStatus}</option>
+            <NativeSelectOption value="ALL">{copy.allStatus}</NativeSelectOption>
             {["ONLINE", "OFFLINE", "FLYING", "CHARGING"].map((value) => (
-              <option key={value}>{value}</option>
+              <NativeSelectOption key={value}>{value}</NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
+        </label>
+        <label>
+          <span className="sr-only">{copy.region}</span>
+          <NativeSelect
+            value={region}
+            onChange={(event) => {
+              setRegion(event.target.value)
+              setPage(1)
+            }}
+          >
+            <NativeSelectOption value="ALL">
+              {store.locale === "zh-CN" ? "全部区域" : "All regions"}
+            </NativeSelectOption>
+            {regions.map((value) => (
+              <NativeSelectOption key={value}>{value}</NativeSelectOption>
+            ))}
+          </NativeSelect>
         </label>
       </div>
-      <Section title={`${copy.uavs} · ${rows.length}`}>
-        {rows.length ? (
+      <Section title={`${copy.uavs} · ${total}`}>
+        {isRemoteApi && serverPage.isError ? (
+          <QueryError locale={store.locale} onRetry={() => void serverPage.refetch()} />
+        ) : isRemoteApi && serverPage.isPending ? (
+          <QueryLoading locale={store.locale} />
+        ) : rows.length ? (
           <div className="data-table">
             <div className="table-head">
               <span>{copy.uavs}</span>
@@ -278,9 +467,14 @@ function UavListView() {
                 <span data-label={copy.owner}>{uav.ownerName}</span>
                 <span data-label={copy.region}>{uav.region}</span>
                 <span data-label={copy.battery}>
-                  <span className="battery-line">
-                    <i style={{ "--battery": `${uav.battery}%` } as React.CSSProperties} />
-                  </span>
+                  <Progress
+                    className="battery-line"
+                    value={uav.battery}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={uav.battery}
+                    aria-label={`${copy.battery} ${uav.battery}%`}
+                  />
                   {uav.battery}%
                 </span>
                 <span data-label={copy.updated}>{formatDate(uav.updatedAt, store.locale)}</span>
@@ -295,6 +489,13 @@ function UavListView() {
         ) : (
           <EmptyState title={copy.noResults} />
         )}
+        <PaginationControls
+          page={page}
+          totalPages={totalPages}
+          pending={serverPage.isFetching}
+          locale={store.locale}
+          onPageChange={setPage}
+        />
       </Section>
     </>
   )
@@ -312,6 +513,7 @@ function CommandDialogView({
   const store = useProductStore()
   const copy = useCopy(store.locale)
   const uav = store.uavs.find((item) => item.id === uavId)
+  const [pending, setPending] = useState(false)
   if (!command || !uav) return null
   const names: Record<CommandType, string> = {
     TAKE_OFF: copy.takeOff,
@@ -335,19 +537,32 @@ function CommandDialogView({
           <code>{command}</code>
         </div>
         <DialogFooter>
-          <button className="button button-secondary" onClick={onClose}>
+          <Button variant="outline" className="button button-secondary" onClick={onClose}>
             {copy.cancel}
-          </button>
-          <button
+          </Button>
+          <Button
             className={command === "STOP" ? "button button-danger" : "button button-primary"}
+            disabled={pending}
+            data-state={pending ? "loading" : undefined}
             onClick={() => {
-              store.sendCommand(uavId, command, "MANUAL")
-              toast.success(copy.commandSent)
-              onClose()
+              setPending(true)
+              void executeAction(
+                () => store.sendCommand(uavId, command, "MANUAL"),
+                store.locale,
+                copy.commandSent
+              ).then((result) => {
+                setPending(false)
+                if (result.ok) onClose()
+              })
             }}
           >
-            {copy.confirm}
-          </button>
+            <PendingLabel
+              pending={pending}
+              pendingLabel={store.locale === "zh-CN" ? "发送中…" : "Sending…"}
+            >
+              {copy.confirm}
+            </PendingLabel>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -360,6 +575,7 @@ function UavDetailView() {
   const id = useUrlId(store.selectedUavId)
   const uav = store.uavs.find((item) => item.id === id) ?? store.uavs[0]
   const [command, setCommand] = useState<CommandType | null>(null)
+  const [retryingCommandId, setRetryingCommandId] = useState<string | null>(null)
   const commands = store.commands.filter((item) => item.uavId === uav.id)
   const logs = store.flightLogs.filter((item) => item.uavId === uav.id)
   return (
@@ -370,10 +586,12 @@ function UavDetailView() {
         actions={
           <>
             <StatusPill value={uav.status} />
-            <Link className="button button-secondary" href={`/map?id=${uav.id}`}>
-              <MapPin size={17} />
-              {copy.map}
-            </Link>
+            <Button asChild variant="outline" className="button button-secondary">
+              <Link href={`/map?id=${uav.id}`}>
+                <MapPin data-icon="inline-start" />
+                {copy.map}
+              </Link>
+            </Button>
           </>
         }
       />
@@ -416,26 +634,38 @@ function UavDetailView() {
         </Section>
         <Section title={store.locale === "zh-CN" ? "快捷控制" : "Quick controls"}>
           <div className="command-grid">
-            <button className="command-button" onClick={() => setCommand("TAKE_OFF")}>
+            <Button
+              variant="outline"
+              className="command-button"
+              onClick={() => setCommand("TAKE_OFF")}
+            >
               <Plane />
               {copy.takeOff}
               <code>TAKE_OFF</code>
-            </button>
-            <button className="command-button" onClick={() => setCommand("LAND")}>
+            </Button>
+            <Button variant="outline" className="command-button" onClick={() => setCommand("LAND")}>
               <LocateFixed />
               {copy.land}
               <code>LAND</code>
-            </button>
-            <button className="command-button" onClick={() => setCommand("RETURN_HOME")}>
+            </Button>
+            <Button
+              variant="outline"
+              className="command-button"
+              onClick={() => setCommand("RETURN_HOME")}
+            >
               <RotateCcw />
               {copy.returnHome}
               <code>RETURN_HOME</code>
-            </button>
-            <button className="command-button command-danger" onClick={() => setCommand("STOP")}>
+            </Button>
+            <Button
+              variant="destructive"
+              className="command-button command-danger"
+              onClick={() => setCommand("STOP")}
+            >
               <X />
               {copy.stop}
               <code>STOP</code>
-            </button>
+            </Button>
           </div>
         </Section>
       </div>
@@ -451,7 +681,28 @@ function UavDetailView() {
                     {item.source} · {formatDate(item.createdAt, store.locale)}
                   </small>
                 </span>
-                <StatusPill value={item.status} />
+                <div className="command-receipt-actions">
+                  <StatusPill value={item.status} />
+                  {(item.status === "FAILED" || item.status === "TIMEOUT") && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={retryingCommandId === item.id}
+                      onClick={() => {
+                        setRetryingCommandId(item.id)
+                        void executeAction(
+                          () =>
+                            store.sendCommand(item.uavId, item.type, item.source, item.transcript),
+                          store.locale,
+                          store.locale === "zh-CN" ? "重试指令已发送" : "Retry sent"
+                        ).then(() => setRetryingCommandId(null))
+                      }}
+                    >
+                      {retryingCommandId === item.id ? <Spinner /> : <RotateCcw />}
+                      {store.locale === "zh-CN" ? "重试" : "Retry"}
+                    </Button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -504,13 +755,16 @@ function MapView() {
         <aside>
           <label>
             {copy.uavs}
-            <select value={selected} onChange={(event) => setSelected(Number(event.target.value))}>
+            <NativeSelect
+              value={selected}
+              onChange={(event) => setSelected(Number(event.target.value))}
+            >
               {store.uavs.map((item) => (
-                <option value={item.id} key={item.id}>
+                <NativeSelectOption value={item.id} key={item.id}>
                   {item.code} · {item.name}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           <dl className="definition-list">
             <div>
@@ -566,21 +820,36 @@ function MapView() {
             <span>{uav.code}</span>
           </div>
           <div className="map-controls">
-            <button
-              onClick={() => setZoom((value) => Math.min(12, value + 1))}
-              aria-label={copy.zoomIn}
-            >
-              <Plus />
-            </button>
-            <button
-              onClick={() => setZoom((value) => Math.max(3, value - 1))}
-              aria-label={copy.zoomOut}
-            >
-              <Minus />
-            </button>
-            <button onClick={() => setSelected(uav.id)} aria-label={copy.center}>
-              <Crosshair />
-            </button>
+            <ActionTooltip label={copy.zoomIn}>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setZoom((value) => Math.min(12, value + 1))}
+                aria-label={copy.zoomIn}
+              >
+                <Plus />
+              </Button>
+            </ActionTooltip>
+            <ActionTooltip label={copy.zoomOut}>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setZoom((value) => Math.max(3, value - 1))}
+                aria-label={copy.zoomOut}
+              >
+                <Minus />
+              </Button>
+            </ActionTooltip>
+            <ActionTooltip label={copy.center}>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setSelected(uav.id)}
+                aria-label={copy.center}
+              >
+                <Crosshair />
+              </Button>
+            </ActionTooltip>
           </div>
           <span className="provider-label">TEST MAP PROVIDER · Z{zoom}</span>
         </div>
@@ -666,10 +935,10 @@ function VoiceView() {
             <Mic />
           </div>
           <strong>{recording ? copy.stopRecording : copy.startRecording}</strong>
-          <button className="button button-primary" onClick={record}>
+          <Button className="button button-primary" onClick={record}>
             {recording ? <Radio /> : <Mic />}
             {recording ? copy.stopRecording : copy.startRecording}
-          </button>
+          </Button>
           <small>
             {supported
               ? store.locale === "zh-CN"
@@ -680,7 +949,7 @@ function VoiceView() {
         </section>
         <section className="voice-form">
           <Field label={copy.textFallback} error={error}>
-            <textarea
+            <Textarea
               value={text}
               onChange={(event) => setText(event.target.value)}
               placeholder={
@@ -688,9 +957,9 @@ function VoiceView() {
               }
             />
           </Field>
-          <button className="button button-secondary" onClick={() => parse(text)}>
+          <Button variant="outline" className="button button-secondary" onClick={() => parse(text)}>
             {copy.parse}
-          </button>
+          </Button>
           {parsed && (
             <div className="parsed-command">
               <Check />
@@ -698,16 +967,18 @@ function VoiceView() {
                 <strong>{store.uavs.find((item) => item.id === parsed.uavId)?.code}</strong>
                 <code>{parsed.type}</code>
               </span>
-              <button
+              <Button
                 className="button button-primary"
-                onClick={() => {
-                  store.sendCommand(parsed.uavId, parsed.type, "VOICE", parsed.transcript)
-                  toast.success(copy.commandSent)
-                  setParsed(null)
-                }}
+                onClick={() =>
+                  void executeAction(
+                    () => store.sendCommand(parsed.uavId, parsed.type, "VOICE", parsed.transcript),
+                    store.locale,
+                    copy.commandSent
+                  ).then((result) => result.ok && setParsed(null))
+                }
               >
                 {copy.confirm}
-              </button>
+              </Button>
             </div>
           )}
         </section>
@@ -771,9 +1042,18 @@ function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
                 <span data-label={copy.updated}>{formatDate(item.occurredAt, store.locale)}</span>
                 <span data-label={copy.action}>
                   {!item.resolved && (
-                    <button className="text-button" onClick={() => store.resolveAlert(item.id)}>
+                    <Button
+                      className="text-button"
+                      onClick={() =>
+                        void executeAction(
+                          () => store.resolveAlert(item.id),
+                          store.locale,
+                          copy.acknowledge
+                        )
+                      }
+                    >
                       {copy.acknowledge}
-                    </button>
+                    </Button>
                   )}
                 </span>
               </div>
@@ -816,6 +1096,55 @@ function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
                   {pod.uavId ? store.uavs.find((item) => item.id === pod.uavId)?.code : "—"}
                 </span>
                 <StatusPill value={pod.doorStatus} />
+                <div className="pod-actions">
+                  <NativeSelect
+                    aria-label={
+                      store.locale === "zh-CN" ? `${pod.name} 舱门状态` : `${pod.name} door status`
+                    }
+                    value={pod.doorStatus}
+                    onChange={(event) =>
+                      void executeAction(
+                        () =>
+                          store.updatePod(
+                            pod.id,
+                            event.target.value as "OPEN" | "CLOSED" | "ERROR",
+                            pod.uavId
+                          ),
+                        store.locale,
+                        copy.save
+                      )
+                    }
+                  >
+                    <NativeSelectOption value="OPEN">OPEN</NativeSelectOption>
+                    <NativeSelectOption value="CLOSED">CLOSED</NativeSelectOption>
+                    <NativeSelectOption value="ERROR">ERROR</NativeSelectOption>
+                  </NativeSelect>
+                  <NativeSelect
+                    aria-label={
+                      store.locale === "zh-CN" ? `${pod.name} 停放设备` : `${pod.name} docked UAV`
+                    }
+                    value={pod.uavId ?? ""}
+                    onChange={(event) =>
+                      void executeAction(
+                        () =>
+                          store.updatePod(
+                            pod.id,
+                            pod.doorStatus,
+                            event.target.value ? Number(event.target.value) : undefined
+                          ),
+                        store.locale,
+                        copy.save
+                      )
+                    }
+                  >
+                    <NativeSelectOption value="">—</NativeSelectOption>
+                    {store.uavs.map((uav) => (
+                      <NativeSelectOption key={uav.id} value={uav.id}>
+                        {uav.code}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
               </div>
             ))}
           </div>
@@ -873,11 +1202,17 @@ function UsersView() {
   const copy = useCopy(store.locale)
   const [editing, setEditing] = useState<Partial<ManagedUser> | null>(null)
   const [addressUser, setAddressUser] = useState<number | null>(null)
-  const save = () => {
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
     if (!editing?.username || !/^1\d{10}$/.test(editing.phone ?? "")) return
-    store.saveUser({ id: editing.id, username: editing.username, phone: editing.phone! })
-    setEditing(null)
-    toast.success(copy.save)
+    setSaving(true)
+    const result = await executeAction(
+      () => store.saveUser({ id: editing.id, username: editing.username!, phone: editing.phone! }),
+      store.locale,
+      copy.save
+    )
+    setSaving(false)
+    if (result.ok) setEditing(null)
   }
   return (
     <>
@@ -889,10 +1224,10 @@ function UsersView() {
             : "Manage delivery users and enforce one default address per user."
         }
         actions={
-          <button className="button button-primary" onClick={() => setEditing({})}>
+          <Button className="button button-primary" onClick={() => setEditing({})}>
             <Plus />
             {copy.add}
-          </button>
+          </Button>
         }
       />
       <Section title={`${copy.users} · ${store.users.length}`}>
@@ -912,21 +1247,43 @@ function UsersView() {
               </span>
               <span data-label="Phone">{user.phone}</span>
               <span data-label="Addresses">
-                <button className="text-button" onClick={() => setAddressUser(user.id)}>
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="text-button"
+                  onClick={() => setAddressUser(user.id)}
+                >
                   {user.addresses.length} · {copy.edit}
-                </button>
+                </Button>
               </span>
               <span data-label={copy.updated}>{formatDate(user.createdAt, store.locale)}</span>
               <span data-label={copy.action}>
-                <button className="text-button" onClick={() => setEditing(user)}>
-                  {copy.edit}
-                </button>
-                <button
-                  className="text-button danger-text"
-                  onClick={() => store.deleteUser(user.id)}
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="text-button"
+                  onClick={() => setEditing(user)}
                 >
-                  {copy.delete}
-                </button>
+                  {copy.edit}
+                </Button>
+                <ConfirmAction
+                  trigger={
+                    <Button variant="link" size="sm" className="text-button danger-text">
+                      {copy.delete}
+                    </Button>
+                  }
+                  title={store.locale === "zh-CN" ? "确认删除用户" : "Delete user?"}
+                  description={
+                    store.locale === "zh-CN"
+                      ? `用户“${user.username}”及其地址将被永久删除。`
+                      : `${user.username} and associated addresses will be permanently deleted.`
+                  }
+                  cancelLabel={copy.cancel}
+                  confirmLabel={copy.delete}
+                  onConfirm={() => {
+                    void executeAction(() => store.deleteUser(user.id), store.locale, copy.delete)
+                  }}
+                />
               </span>
             </div>
           ))}
@@ -945,7 +1302,7 @@ function UsersView() {
             </DialogDescription>
           </DialogHeader>
           <Field label={copy.users}>
-            <input
+            <Input
               value={editing?.username ?? ""}
               onChange={(event) =>
                 setEditing((value) => ({ ...value, username: event.target.value }))
@@ -962,18 +1319,32 @@ function UsersView() {
                 : undefined
             }
           >
-            <input
+            <Input
               value={editing?.phone ?? ""}
               onChange={(event) => setEditing((value) => ({ ...value, phone: event.target.value }))}
             />
           </Field>
           <DialogFooter>
-            <button className="button button-secondary" onClick={() => setEditing(null)}>
+            <Button
+              variant="outline"
+              className="button button-secondary"
+              onClick={() => setEditing(null)}
+            >
               {copy.cancel}
-            </button>
-            <button className="button button-primary" onClick={save}>
-              {copy.save}
-            </button>
+            </Button>
+            <Button
+              className="button button-primary"
+              disabled={saving}
+              data-state={saving ? "loading" : undefined}
+              onClick={() => void save()}
+            >
+              <PendingLabel
+                pending={saving}
+                pendingLabel={store.locale === "zh-CN" ? "保存中…" : "Saving…"}
+              >
+                {copy.save}
+              </PendingLabel>
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -987,7 +1358,21 @@ function AddressDialog({ userId, onClose }: { userId: number | null; onClose: ()
   const copy = useCopy(store.locale)
   const user = store.users.find((item) => item.id === userId)
   const [detail, setDetail] = useState("")
+  const [receiverName, setReceiverName] = useState("")
+  const [receiverPhone, setReceiverPhone] = useState("")
+  const [latitude, setLatitude] = useState("")
+  const [longitude, setLongitude] = useState("")
+  const [editingAddressId, setEditingAddressId] = useState<number | undefined>()
+  const [saving, setSaving] = useState(false)
   if (!userId || !user) return null
+  const resetAddressForm = () => {
+    setEditingAddressId(undefined)
+    setReceiverName("")
+    setReceiverPhone("")
+    setDetail("")
+    setLatitude("")
+    setLongitude("")
+  }
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
@@ -1012,34 +1397,163 @@ function AddressDialog({ userId, onClose }: { userId: number | null; onClose: ()
                 <small>{item.detail}</small>
               </span>
               {item.isDefault && <StatusPill value="DEFAULT" />}
+              <span className="address-actions">
+                <Button
+                  className="text-button"
+                  onClick={() => {
+                    setEditingAddressId(item.id)
+                    setReceiverName(item.receiverName)
+                    setReceiverPhone(item.receiverPhone)
+                    setDetail(item.detail)
+                    setLatitude(String(item.latitude))
+                    setLongitude(String(item.longitude))
+                  }}
+                >
+                  {copy.edit}
+                </Button>
+                {!item.isDefault && (
+                  <Button
+                    className="text-button"
+                    onClick={() =>
+                      void executeAction(
+                        () => store.setDefaultAddress(userId, item.id),
+                        store.locale,
+                        copy.save
+                      )
+                    }
+                  >
+                    {store.locale === "zh-CN" ? "设为默认" : "Set default"}
+                  </Button>
+                )}
+                <ConfirmAction
+                  trigger={
+                    <Button variant="link" size="sm" className="text-button danger-text">
+                      {copy.delete}
+                    </Button>
+                  }
+                  title={store.locale === "zh-CN" ? "确认删除地址" : "Delete address?"}
+                  description={
+                    store.locale === "zh-CN"
+                      ? `将永久删除“${item.detail}”。`
+                      : `This permanently deletes “${item.detail}”.`
+                  }
+                  cancelLabel={copy.cancel}
+                  confirmLabel={copy.delete}
+                  onConfirm={() => {
+                    void executeAction(
+                      () => store.deleteAddress(userId, item.id),
+                      store.locale,
+                      copy.delete
+                    )
+                  }}
+                />
+              </span>
             </div>
           ))}
         </div>
-        <Field label={store.locale === "zh-CN" ? "新地址" : "New address"}>
-          <input value={detail} onChange={(event) => setDetail(event.target.value)} />
-        </Field>
-        <DialogFooter>
-          <button className="button button-secondary" onClick={onClose}>
-            {copy.cancel}
-          </button>
-          <button
-            className="button button-primary"
-            onClick={() => {
-              if (!detail.trim()) return
-              store.saveAddress(userId, {
-                receiverName: user.username,
-                receiverPhone: user.phone,
-                detail,
-                latitude: 32.06,
-                longitude: 118.78,
-                isDefault: true,
-              })
-              setDetail("")
-              toast.success(copy.save)
-            }}
+        <div className="form-grid">
+          <Field label={store.locale === "zh-CN" ? "收件人" : "Receiver"}>
+            <Input
+              value={receiverName}
+              placeholder={user.username}
+              onChange={(event) => setReceiverName(event.target.value)}
+            />
+          </Field>
+          <Field
+            label={store.locale === "zh-CN" ? "收件手机号" : "Receiver phone"}
+            error={
+              receiverPhone && !/^1\d{10}$/.test(receiverPhone)
+                ? store.locale === "zh-CN"
+                  ? "请输入有效手机号"
+                  : "Enter a valid phone number"
+                : undefined
+            }
           >
-            {copy.add}
-          </button>
+            <Input
+              value={receiverPhone}
+              placeholder={user.phone}
+              onChange={(event) => setReceiverPhone(event.target.value)}
+            />
+          </Field>
+        </div>
+        <Field label={store.locale === "zh-CN" ? "详细地址" : "Address detail"}>
+          <Input value={detail} onChange={(event) => setDetail(event.target.value)} />
+        </Field>
+        <div className="form-grid">
+          <Field label={store.locale === "zh-CN" ? "纬度" : "Latitude"}>
+            <Input
+              type="number"
+              min="-90"
+              max="90"
+              step="0.000001"
+              inputMode="decimal"
+              value={latitude}
+              onChange={(event) => setLatitude(event.target.value)}
+            />
+          </Field>
+          <Field label={store.locale === "zh-CN" ? "经度" : "Longitude"}>
+            <Input
+              type="number"
+              min="-180"
+              max="180"
+              step="0.000001"
+              inputMode="decimal"
+              value={longitude}
+              onChange={(event) => setLongitude(event.target.value)}
+            />
+          </Field>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" className="button button-secondary" onClick={onClose}>
+            {copy.cancel}
+          </Button>
+          <Button
+            className="button button-primary"
+            disabled={
+              saving ||
+              !detail.trim() ||
+              !latitude.trim() ||
+              !longitude.trim() ||
+              !Number.isFinite(Number(latitude)) ||
+              !Number.isFinite(Number(longitude)) ||
+              Number(latitude) < -90 ||
+              Number(latitude) > 90 ||
+              Number(longitude) < -180 ||
+              Number(longitude) > 180
+            }
+            data-state={saving ? "loading" : undefined}
+            onClick={() =>
+              void (async () => {
+                if (!detail.trim()) return
+                setSaving(true)
+                const result = await executeAction(
+                  () =>
+                    store.saveAddress(userId, {
+                      id: editingAddressId,
+                      receiverName: receiverName.trim() || user.username,
+                      receiverPhone: receiverPhone.trim() || user.phone,
+                      detail,
+                      latitude: Number(latitude),
+                      longitude: Number(longitude),
+                      isDefault:
+                        user.addresses.find((address) => address.id === editingAddressId)
+                          ?.isDefault ?? true,
+                    }),
+                  store.locale,
+                  copy.save
+                )
+                setSaving(false)
+                if (result.ok) resetAddressForm()
+              })()
+            }
+          >
+            <PendingLabel
+              pending={saving}
+              pendingLabel={store.locale === "zh-CN" ? "保存中…" : "Saving…"}
+            >
+              {editingAddressId ? copy.save : copy.add}
+            </PendingLabel>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1051,24 +1565,70 @@ function GoodsView() {
   const copy = useCopy(store.locale)
   const [editing, setEditing] = useState<Partial<Goods> | null>(null)
   const [selected, setSelected] = useState<number[]>([])
-  const save = () => {
+  const [saving, setSaving] = useState(false)
+  const [query, setQuery] = useState("")
+  const [category, setCategory] = useState<Goods["category"] | "ALL">("ALL")
+  const [page, setPage] = useState(1)
+  const pageSize = 10
+  const goodsRevision = store.goods
+    .map((item) => `${item.id}:${item.name}:${item.category}:${item.stock}:${item.status}`)
+    .join("|")
+  const serverPage = useQuery({
+    queryKey: ["goods-page", query, category, page, goodsRevision],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(page), size: String(pageSize) })
+      if (query.trim()) params.set("q", query.trim())
+      if (category !== "ALL") params.set("category", category)
+      return api.goods(`?${params}`)
+    },
+    enabled: isRemoteApi,
+    placeholderData: (previous) => previous,
+  })
+  const save = async () => {
     if (!editing?.name) return
-    store.saveGoods({
-      id: editing.id,
-      name: editing.name,
-      category: editing.category ?? "life",
-      price: Number(editing.price ?? 0),
-      stock: Number(editing.stock ?? 0),
-      weight: Number(editing.weight ?? 0),
-      status: editing.status ?? 1,
-    })
-    setEditing(null)
-    toast.success(copy.save)
+    setSaving(true)
+    const name = editing.name
+    const result = await executeAction(
+      () =>
+        store.saveGoods({
+          id: editing.id,
+          name,
+          category: editing.category ?? "life",
+          price: Number(editing.price ?? 0),
+          stock: Number(editing.stock ?? 0),
+          weight: Number(editing.weight ?? 0),
+          status: editing.status ?? 1,
+        }),
+      store.locale,
+      copy.save
+    )
+    setSaving(false)
+    if (result.ok) setEditing(null)
   }
   const categoryCounts = ["food", "medicine", "life", "industry"].map((category) => ({
     label: category.toUpperCase(),
     value: store.goods.filter((item) => item.category === category).length,
   }))
+  const filteredGoods = store.goods.filter(
+    (item) =>
+      (!query.trim() || item.name.toLowerCase().includes(query.trim().toLowerCase())) &&
+      (category === "ALL" || item.category === category)
+  )
+  const total = isRemoteApi ? (serverPage.data?.total ?? 0) : filteredGoods.length
+  const totalPages = isRemoteApi
+    ? (serverPage.data?.totalPages ?? 1)
+    : Math.max(1, Math.ceil(filteredGoods.length / pageSize))
+  const rows = isRemoteApi
+    ? (serverPage.data?.items ?? [])
+    : filteredGoods.slice((page - 1) * pageSize, page * pageSize)
+  const deleteSelectedGoods = async () => {
+    const result = await executeAction(() => store.deleteGoods(selected), store.locale, copy.delete)
+    if (!result.ok) return
+    if (page > 1 && rows.every((item) => selected.includes(item.id))) {
+      setPage((value) => value - 1)
+    }
+    setSelected([])
+  }
   return (
     <>
       <PageHeader
@@ -1080,72 +1640,140 @@ function GoodsView() {
         }
         actions={
           <>
-            <button
-              className="button button-secondary"
-              disabled={!selected.length}
-              onClick={() => {
-                store.deleteGoods(selected)
-                setSelected([])
-              }}
-            >
-              {copy.delete} ({selected.length})
-            </button>
-            <button className="button button-primary" onClick={() => setEditing({})}>
+            <ConfirmAction
+              trigger={
+                <Button
+                  variant="outline"
+                  className="button button-secondary"
+                  disabled={!selected.length}
+                >
+                  {copy.delete} ({selected.length})
+                </Button>
+              }
+              title={store.locale === "zh-CN" ? "确认批量删除" : "Confirm bulk deletion"}
+              description={
+                store.locale === "zh-CN"
+                  ? `将永久删除已选择的 ${selected.length} 个商品。`
+                  : `This permanently deletes ${selected.length} selected goods.`
+              }
+              cancelLabel={copy.cancel}
+              confirmLabel={copy.delete}
+              onConfirm={deleteSelectedGoods}
+            />
+            <Button className="button button-primary" onClick={() => setEditing({})}>
               <Plus />
               {copy.add}
-            </button>
+            </Button>
           </>
         }
       />
+      <div className="filter-bar">
+        <label className="search-field">
+          <Search size={17} />
+          <Input
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+              setPage(1)
+            }}
+            placeholder={store.locale === "zh-CN" ? "搜索商品" : "Search goods"}
+          />
+        </label>
+        <label>
+          <span className="sr-only">{store.locale === "zh-CN" ? "分类" : "Category"}</span>
+          <NativeSelect
+            value={category}
+            onChange={(event) => {
+              setCategory(event.target.value as Goods["category"] | "ALL")
+              setPage(1)
+            }}
+          >
+            <NativeSelectOption value="ALL">
+              {store.locale === "zh-CN" ? "全部分类" : "All categories"}
+            </NativeSelectOption>
+            {categoryCounts.map((item) => (
+              <NativeSelectOption key={item.label} value={item.label.toLowerCase()}>
+                {item.label}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </label>
+      </div>
       <MetricStrip items={categoryCounts} />
-      <Section title={`${copy.goods} · ${store.goods.length}`}>
-        <div className="data-table goods-table">
-          <div className="table-head">
-            <span>✓</span>
-            <span>{copy.goods}</span>
-            <span>{store.locale === "zh-CN" ? "分类" : "Category"}</span>
-            <span>{store.locale === "zh-CN" ? "价格" : "Price"}</span>
-            <span>{store.locale === "zh-CN" ? "库存" : "Stock"}</span>
-            <span>{copy.status}</span>
-            <span>{copy.action}</span>
-          </div>
-          {store.goods.map((item) => (
-            <div className="table-row" key={item.id}>
-              <span>
-                <input
-                  type="checkbox"
-                  checked={selected.includes(item.id)}
-                  onChange={() =>
-                    setSelected((value) =>
-                      value.includes(item.id)
-                        ? value.filter((id) => id !== item.id)
-                        : [...value, item.id]
-                    )
-                  }
-                  aria-label={`Select ${item.name}`}
-                />
-              </span>
-              <span data-label={copy.goods}>
-                <strong>{item.name}</strong>
-                <small>{item.weight} kg</small>
-              </span>
-              <span data-label="Category">{item.category}</span>
-              <span data-label="Price">¥{item.price.toFixed(2)}</span>
-              <span data-label="Stock">{item.stock}</span>
-              <span data-label={copy.status}>
-                <StatusPill value={item.status === 1 ? "ENABLED" : "DISABLED"} />
-              </span>
-              <span data-label={copy.action}>
-                <button className="text-button" onClick={() => store.toggleGoods(item.id)}>
-                  {item.status ? copy.disable : copy.enable}
-                </button>
-                <button className="text-button" onClick={() => setEditing(item)}>
-                  {copy.edit}
-                </button>
-              </span>
+      <Section title={`${copy.goods} · ${total}`}>
+        {isRemoteApi && serverPage.isError ? (
+          <QueryError locale={store.locale} onRetry={() => void serverPage.refetch()} />
+        ) : isRemoteApi && serverPage.isPending ? (
+          <QueryLoading locale={store.locale} />
+        ) : rows.length ? (
+          <div className="data-table goods-table">
+            <div className="table-head">
+              <span>✓</span>
+              <span>{copy.goods}</span>
+              <span>{store.locale === "zh-CN" ? "分类" : "Category"}</span>
+              <span>{store.locale === "zh-CN" ? "价格" : "Price"}</span>
+              <span>{store.locale === "zh-CN" ? "库存" : "Stock"}</span>
+              <span>{copy.status}</span>
+              <span>{copy.action}</span>
             </div>
-          ))}
-        </div>
+            {rows.map((item) => (
+              <div className="table-row" key={item.id}>
+                <span>
+                  <label className="selection-control">
+                    <Checkbox
+                      checked={selected.includes(item.id)}
+                      onCheckedChange={() =>
+                        setSelected((value) =>
+                          value.includes(item.id)
+                            ? value.filter((id) => id !== item.id)
+                            : [...value, item.id]
+                        )
+                      }
+                      aria-label={`Select ${item.name}`}
+                    />
+                  </label>
+                </span>
+                <span data-label={copy.goods}>
+                  <strong>{item.name}</strong>
+                  <small>{item.weight} kg</small>
+                </span>
+                <span data-label="Category">{item.category}</span>
+                <span data-label="Price">¥{item.price.toFixed(2)}</span>
+                <span data-label="Stock">{item.stock}</span>
+                <span data-label={copy.status}>
+                  <StatusPill value={item.status === 1 ? "ENABLED" : "DISABLED"} />
+                </span>
+                <span data-label={copy.action}>
+                  <Button
+                    className="text-button"
+                    onClick={() =>
+                      void executeAction(() => store.toggleGoods(item.id), store.locale)
+                    }
+                  >
+                    {item.status ? copy.disable : copy.enable}
+                  </Button>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-button"
+                    onClick={() => setEditing(item)}
+                  >
+                    {copy.edit}
+                  </Button>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title={copy.noResults} />
+        )}
+        <PaginationControls
+          page={page}
+          totalPages={totalPages}
+          pending={serverPage.isFetching}
+          locale={store.locale}
+          onPageChange={setPage}
+        />
       </Section>
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogContent>
@@ -1161,25 +1789,25 @@ function GoodsView() {
           </DialogHeader>
           <div className="form-grid">
             <Field label={copy.goods}>
-              <input
+              <Input
                 value={editing?.name ?? ""}
                 onChange={(e) => setEditing((v) => ({ ...v, name: e.target.value }))}
               />
             </Field>
             <Field label="Category">
-              <select
+              <NativeSelect
                 value={editing?.category ?? "life"}
                 onChange={(e) =>
                   setEditing((v) => ({ ...v, category: e.target.value as Goods["category"] }))
                 }
               >
                 {["food", "medicine", "life", "industry"].map((value) => (
-                  <option key={value}>{value}</option>
+                  <NativeSelectOption key={value}>{value}</NativeSelectOption>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
             <Field label="Price">
-              <input
+              <Input
                 type="number"
                 min="0"
                 value={editing?.price ?? 0}
@@ -1187,7 +1815,7 @@ function GoodsView() {
               />
             </Field>
             <Field label="Stock">
-              <input
+              <Input
                 type="number"
                 min="0"
                 value={editing?.stock ?? 0}
@@ -1195,7 +1823,7 @@ function GoodsView() {
               />
             </Field>
             <Field label="Weight">
-              <input
+              <Input
                 type="number"
                 min="0"
                 step="0.1"
@@ -1205,12 +1833,26 @@ function GoodsView() {
             </Field>
           </div>
           <DialogFooter>
-            <button className="button button-secondary" onClick={() => setEditing(null)}>
+            <Button
+              variant="outline"
+              className="button button-secondary"
+              onClick={() => setEditing(null)}
+            >
               {copy.cancel}
-            </button>
-            <button className="button button-primary" onClick={save}>
-              {copy.save}
-            </button>
+            </Button>
+            <Button
+              className="button button-primary"
+              disabled={saving}
+              data-state={saving ? "loading" : undefined}
+              onClick={() => void save()}
+            >
+              <PendingLabel
+                pending={saving}
+                pendingLabel={store.locale === "zh-CN" ? "保存中…" : "Saving…"}
+              >
+                {copy.save}
+              </PendingLabel>
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1223,6 +1865,12 @@ function OrdersView({ detail = false }: { detail?: boolean }) {
   const copy = useCopy(store.locale)
   const id = useUrlId(store.orders[0]?.id ?? 1)
   const order = store.orders.find((item) => item.id === id) ?? store.orders[0]
+  const [creating, setCreating] = useState(false)
+  const [userId, setUserId] = useState(store.users.find((user) => user.addresses.length)?.id ?? 0)
+  const selectedUser = store.users.find((user) => user.id === userId)
+  const [addressId, setAddressId] = useState(selectedUser?.addresses[0]?.id ?? 0)
+  const [quantities, setQuantities] = useState<Record<number, number>>({})
+  const [saving, setSaving] = useState(false)
   if (detail)
     return (
       <>
@@ -1259,6 +1907,20 @@ function OrdersView({ detail = false }: { detail?: boolean }) {
             ))}
           </div>
         </Section>
+        {order.addressSnapshot && (
+          <Section title={store.locale === "zh-CN" ? "配送地址快照" : "Delivery address snapshot"}>
+            <div className="definition-list">
+              <div>
+                <dt>{order.addressSnapshot.receiverName}</dt>
+                <dd>{order.addressSnapshot.receiverPhone}</dd>
+              </div>
+              <div>
+                <dt>{store.locale === "zh-CN" ? "详细地址" : "Address"}</dt>
+                <dd>{order.addressSnapshot.detail}</dd>
+              </div>
+            </div>
+          </Section>
+        )}
         <OrderActions orderId={order.id} />
       </>
     )
@@ -1271,9 +1933,15 @@ function OrdersView({ detail = false }: { detail?: boolean }) {
             ? "从创建、调度、配送到完成追踪订单。"
             : "Track orders from creation through dispatch and delivery."
         }
+        actions={
+          <Button className="button button-primary" onClick={() => setCreating(true)}>
+            <Plus />
+            {copy.add}
+          </Button>
+        }
       />
       <Section title={`${copy.orders} · ${store.orders.length}`}>
-        <div className="data-table compact">
+        <div className="data-table compact orders-table">
           <div className="table-head">
             <span>{copy.orders}</span>
             <span>{copy.users}</span>
@@ -1304,6 +1972,119 @@ function OrdersView({ detail = false }: { detail?: boolean }) {
           ))}
         </div>
       </Section>
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{store.locale === "zh-CN" ? "创建订单" : "Create order"}</DialogTitle>
+            <DialogDescription>
+              {store.locale === "zh-CN"
+                ? "选择用户、地址和商品数量；库存将在创建成功后扣减。"
+                : "Select a user, address, and quantities. Stock is deducted after creation."}
+            </DialogDescription>
+          </DialogHeader>
+          <Field label={copy.users}>
+            <NativeSelect
+              value={userId}
+              onChange={(event) => {
+                const nextUserId = Number(event.target.value)
+                const nextUser = store.users.find((user) => user.id === nextUserId)
+                setUserId(nextUserId)
+                setAddressId(nextUser?.addresses[0]?.id ?? 0)
+              }}
+            >
+              {store.users
+                .filter((user) => user.addresses.length)
+                .map((user) => (
+                  <NativeSelectOption key={user.id} value={user.id}>
+                    {user.username} · {user.phone}
+                  </NativeSelectOption>
+                ))}
+            </NativeSelect>
+          </Field>
+          <Field label={store.locale === "zh-CN" ? "配送地址" : "Delivery address"}>
+            <NativeSelect
+              value={addressId}
+              onChange={(event) => setAddressId(Number(event.target.value))}
+            >
+              {selectedUser?.addresses.map((address) => (
+                <NativeSelectOption key={address.id} value={address.id}>
+                  {address.detail}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </Field>
+          <div className="order-editor">
+            {store.goods
+              .filter((goods) => goods.status === 1 && goods.stock > 0)
+              .map((goods) => (
+                <label key={goods.id}>
+                  <span>
+                    <strong>{goods.name}</strong>
+                    <small>
+                      ¥{goods.price.toFixed(2)} · {store.locale === "zh-CN" ? "库存" : "Stock"}{" "}
+                      {goods.stock}
+                    </small>
+                  </span>
+                  <Input
+                    type="number"
+                    min="0"
+                    max={goods.stock}
+                    value={quantities[goods.id] ?? 0}
+                    onChange={(event) =>
+                      setQuantities((value) => ({
+                        ...value,
+                        [goods.id]: Math.max(0, Math.min(goods.stock, Number(event.target.value))),
+                      }))
+                    }
+                    aria-label={`${goods.name} quantity`}
+                  />
+                </label>
+              ))}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="button button-secondary"
+              onClick={() => setCreating(false)}
+            >
+              {copy.cancel}
+            </Button>
+            <Button
+              className="button button-primary"
+              disabled={
+                saving ||
+                !userId ||
+                !addressId ||
+                !Object.values(quantities).some((count) => count > 0)
+              }
+              data-state={saving ? "loading" : undefined}
+              onClick={() => {
+                const items = Object.entries(quantities)
+                  .filter(([, count]) => count > 0)
+                  .map(([goodsId, count]) => ({ goodsId: Number(goodsId), count }))
+                setSaving(true)
+                void executeAction(
+                  () => store.createOrder(userId, addressId, items),
+                  store.locale,
+                  copy.save
+                ).then((result) => {
+                  setSaving(false)
+                  if (!result.ok) return
+                  setCreating(false)
+                  setQuantities({})
+                })
+              }}
+            >
+              <PendingLabel
+                pending={saving}
+                pendingLabel={store.locale === "zh-CN" ? "创建中…" : "Creating…"}
+              >
+                {copy.save}
+              </PendingLabel>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
@@ -1317,33 +2098,41 @@ function OrderActions({ orderId }: { orderId: number }) {
   return (
     <Section title={store.locale === "zh-CN" ? "订单操作" : "Order actions"}>
       <div className="action-line">
-        <select value={uavId} onChange={(event) => setUavId(Number(event.target.value))}>
+        <NativeSelect value={uavId} onChange={(event) => setUavId(Number(event.target.value))}>
           {store.uavs
             .filter((item) => item.status === "ONLINE")
             .map((item) => (
-              <option key={item.id} value={item.id}>
+              <NativeSelectOption key={item.id} value={item.id}>
                 {item.code} · {item.battery}%
-              </option>
+              </NativeSelectOption>
             ))}
-        </select>
-        <button
+        </NativeSelect>
+        <Button
           className="button button-primary"
           disabled={order.status !== "CREATED"}
-          onClick={() => {
-            if (store.dispatchOrder(orderId, uavId)) toast.success(copy.dispatch)
-          }}
+          onClick={() =>
+            void executeAction(
+              () => store.dispatchOrder(orderId, uavId),
+              store.locale,
+              copy.dispatch
+            )
+          }
         >
           {copy.dispatch}
-        </button>
-        <button
+        </Button>
+        <Button
           className="button button-danger"
           disabled={!["CREATED", "DISPATCHING"].includes(order.status)}
-          onClick={() => {
-            if (store.transitionOrder(orderId, "CANCELLED")) toast.success(copy.cancelOrder)
-          }}
+          onClick={() =>
+            void executeAction(
+              () => store.transitionOrder(orderId, "CANCELLED"),
+              store.locale,
+              copy.cancelOrder
+            )
+          }
         >
           {copy.cancelOrder}
-        </button>
+        </Button>
       </div>
     </Section>
   )
@@ -1352,6 +2141,8 @@ function OrderActions({ orderId }: { orderId: number }) {
 function TasksView() {
   const store = useProductStore()
   const copy = useCopy(store.locale)
+  const [failureTaskId, setFailureTaskId] = useState<number | null>(null)
+  const [failureReason, setFailureReason] = useState("")
   return (
     <>
       <PageHeader
@@ -1372,29 +2163,42 @@ function TasksView() {
               </span>
               <span>{store.uavs.find((item) => item.id === task.uavId)?.code}</span>
               <StatusPill value={task.taskStatus} />
+              {task.failureReason && <small>{task.failureReason}</small>}
               <div>
                 {task.taskStatus === "WAITING" && (
-                  <button
+                  <Button
                     className="text-button"
-                    onClick={() => store.transitionTask(task.id, "FLYING")}
+                    onClick={() =>
+                      void executeAction(
+                        () => store.transitionTask(task.id, "FLYING"),
+                        store.locale,
+                        copy.startTask
+                      )
+                    }
                   >
                     {copy.startTask}
-                  </button>
+                  </Button>
                 )}
                 {task.taskStatus === "FLYING" && (
                   <>
-                    <button
+                    <Button
                       className="text-button"
-                      onClick={() => store.transitionTask(task.id, "ARRIVED")}
+                      onClick={() =>
+                        void executeAction(
+                          () => store.transitionTask(task.id, "ARRIVED"),
+                          store.locale,
+                          copy.arrive
+                        )
+                      }
                     >
                       {copy.arrive}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       className="text-button danger-text"
-                      onClick={() => store.transitionTask(task.id, "FAILED")}
+                      onClick={() => setFailureTaskId(task.id)}
                     >
                       {copy.fail}
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>
@@ -1402,25 +2206,251 @@ function TasksView() {
           ))}
         </div>
       </Section>
+      <Dialog
+        open={failureTaskId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFailureTaskId(null)
+            setFailureReason("")
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {store.locale === "zh-CN" ? "记录失败原因" : "Record failure"}
+            </DialogTitle>
+            <DialogDescription>
+              {store.locale === "zh-CN"
+                ? "失败原因会写入任务记录并用于后续重调度复盘。"
+                : "The reason is stored with the task for retry review."}
+            </DialogDescription>
+          </DialogHeader>
+          <Field label={store.locale === "zh-CN" ? "失败原因" : "Failure reason"}>
+            <Textarea
+              value={failureReason}
+              onChange={(event) => setFailureReason(event.target.value)}
+            />
+          </Field>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="button button-secondary"
+              onClick={() => setFailureTaskId(null)}
+            >
+              {copy.cancel}
+            </Button>
+            <Button
+              className="button button-danger"
+              disabled={!failureReason.trim()}
+              onClick={() => {
+                if (failureTaskId === null) return
+                void executeAction(
+                  () => store.transitionTask(failureTaskId, "FAILED", failureReason.trim()),
+                  store.locale,
+                  copy.fail
+                ).then((result) => {
+                  if (!result.ok) return
+                  setFailureTaskId(null)
+                  setFailureReason("")
+                })
+              }}
+            >
+              {copy.fail}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
 
 function SettingsView() {
   const store = useProductStore()
+  const router = useRouter()
+  const queryClient = useQueryClient()
   const copy = useCopy(store.locale)
-  const [name, setName] = useState(store.staff?.displayName ?? "")
   const [updateMessage, setUpdateMessage] = useState("")
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null)
-  const bindings = store.bindings.filter((item) => item.staffId === store.staff?.id)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [sessions, setSessions] = useState<Awaited<ReturnType<typeof api.sessions>>>([])
+  const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>(() =>
+    store.staff ? [{ ...store.staff, enabled: true }] : []
+  )
+  const [staffLoading, setStaffLoading] = useState(isRemoteApi && store.staff?.role === "admin")
+  const [staffSaving, setStaffSaving] = useState(false)
+  const [editingStaff, setEditingStaff] = useState<StaffAccountForm | null>(null)
+  const staffForm = useForm<StaffAccountForm>({
+    resolver: zodResolver(staffAccountFormSchema),
+    defaultValues: {
+      username: "",
+      displayName: "",
+      phone: "",
+      password: "",
+      role: "manager",
+      enabled: true,
+    },
+  })
+  const staffRole = useWatch({ control: staffForm.control, name: "role" })
+  const staffEnabled = useWatch({ control: staffForm.control, name: "enabled" })
+  const profileForm = useForm<ProfileForm>({
+    resolver: zodResolver(profileFormSchema),
+    defaultValues: {
+      displayName: store.staff?.displayName ?? "",
+      phone: store.staff?.phone ?? "",
+    },
+  })
+  const bindingHistory = store.bindings.filter(
+    (item) => item.staffId === store.staff?.id && item.unboundAt
+  )
+  const bindings = store.bindings.filter(
+    (item) => item.staffId === store.staff?.id && !item.unboundAt
+  )
+  const finishLogout = async () => {
+    try {
+      suppressSessionRecovery()
+      await api.forgetAuthentication()
+    } catch {
+      toast.warning(
+        store.locale === "zh-CN"
+          ? "本地安全凭据未能完全移除，请关闭应用后重新打开。"
+          : "Local security credentials could not be fully removed. Close and reopen the app."
+      )
+    } finally {
+      queryClient.clear()
+      store.logout()
+      router.replace("/login")
+    }
+  }
   useEffect(() => {
     void getPlatformInfo()
       .then(setPlatformInfo)
       .catch(() => setPlatformInfo(null))
   }, [])
+  useEffect(() => {
+    if (store.staff?.role !== "admin" || !isRemoteApi) return
+    let active = true
+    void api
+      .staffAccounts()
+      .then((accounts) => {
+        if (active) setStaffAccounts(accounts)
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          const detail = error instanceof Error ? error.message : String(error)
+          toast.error(
+            store.locale === "zh-CN"
+              ? `员工账号加载失败：${detail}`
+              : `Unable to load staff accounts: ${detail}`
+          )
+        }
+      })
+      .finally(() => {
+        if (active) setStaffLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [store.locale, store.staff?.role])
+  const openStaffEditor = (account?: StaffAccount) => {
+    const values: StaffAccountForm = account
+      ? { ...account, password: "" }
+      : {
+          username: "",
+          displayName: "",
+          phone: "",
+          password: "",
+          role: "manager",
+          enabled: true,
+        }
+    staffForm.reset(values)
+    setEditingStaff(values)
+  }
+  const saveStaffAccount = async (account: StaffAccountForm) => {
+    const username = account.username.trim()
+    const displayName = account.displayName.trim()
+    const phone = account.phone.trim()
+    const password = account.password.trim()
+    setStaffSaving(true)
+    const { role, enabled } = account
+    const result = await executeAction(
+      async () => {
+        if (isRemoteApi) {
+          return account.id
+            ? api.updateStaffAccount(account.id, {
+                username,
+                ...(password ? { password } : {}),
+                displayName,
+                role,
+                phone,
+                enabled,
+              })
+            : api.createStaffAccount({ username, password, displayName, role, phone })
+        }
+        return {
+          id: account.id ?? Math.max(0, ...staffAccounts.map((item) => item.id)) + 1,
+          username,
+          displayName,
+          role,
+          phone,
+          enabled,
+        } satisfies StaffAccount
+      },
+      store.locale,
+      copy.save
+    )
+    setStaffSaving(false)
+    if (!result.ok) return
+    if (result.value.id === store.staff?.id) {
+      if (password) {
+        await finishLogout()
+        return
+      }
+      useProductStore.setState({
+        staff: {
+          id: result.value.id,
+          username: result.value.username,
+          displayName: result.value.displayName,
+          role: result.value.role,
+          phone: result.value.phone,
+        },
+      })
+      profileForm.reset({ displayName: result.value.displayName, phone: result.value.phone })
+    }
+    setStaffAccounts((accounts) =>
+      account.id
+        ? accounts.map((account) => (account.id === result.value.id ? result.value : account))
+        : [...accounts, result.value]
+    )
+    setEditingStaff(null)
+  }
+  const disableStaffAccount = async (account: StaffAccount) => {
+    const result = await executeAction(
+      () =>
+        isRemoteApi
+          ? api.disableStaffAccount(account.id)
+          : Promise.resolve({ ...account, enabled: false }),
+      store.locale,
+      store.locale === "zh-CN" ? "账号已停用" : "Account disabled"
+    )
+    if (!result.ok) return
+    setStaffAccounts((accounts) =>
+      accounts.map((item) => (item.id === result.value.id ? result.value : item))
+    )
+  }
   const checkUpdate = async () => {
     if (!isTauri()) {
-      setUpdateMessage(copy.updateUnavailable)
+      const result = await executeAction(api.version, store.locale)
+      if (!result.ok) return
+      setUpdateMessage(
+        result.value.configured
+          ? `${store.locale === "zh-CN" ? "当前版本" : "Current version"} ${result.value.currentVersion}`
+          : copy.updateUnavailable
+      )
       return
     }
     const result = await checkForAppUpdate()
@@ -1439,6 +2469,9 @@ function SettingsView() {
       <div className="settings-layout">
         <nav>
           <a href="#profile">{copy.profile}</a>
+          {store.staff?.role === "admin" && (
+            <a href="#staff">{store.locale === "zh-CN" ? "员工账号" : "Staff accounts"}</a>
+          )}
           <a href="#security">{copy.security}</a>
           <a href="#bindings">{copy.bindings}</a>
           <a href="#about">{copy.about}</a>
@@ -1446,47 +2479,179 @@ function SettingsView() {
         <div>
           <Section title={copy.profile}>
             <div id="profile" className="form-inline">
-              <Field label={store.locale === "zh-CN" ? "显示名称" : "Display name"}>
-                <input value={name} onChange={(e) => setName(e.target.value)} />
+              <Field
+                label={store.locale === "zh-CN" ? "显示名称" : "Display name"}
+                error={
+                  profileForm.formState.errors.displayName
+                    ? store.locale === "zh-CN"
+                      ? "请输入不超过 80 个字符的显示名称"
+                      : "Enter a display name up to 80 characters"
+                    : undefined
+                }
+              >
+                <Input
+                  aria-invalid={Boolean(profileForm.formState.errors.displayName)}
+                  {...profileForm.register("displayName")}
+                />
+              </Field>
+              <Field
+                label={store.locale === "zh-CN" ? "手机号" : "Phone"}
+                error={
+                  profileForm.formState.errors.phone
+                    ? store.locale === "zh-CN"
+                      ? "请输入有效的中国大陆手机号"
+                      : "Enter a valid mainland China mobile number"
+                    : undefined
+                }
+              >
+                <Input
+                  inputMode="tel"
+                  aria-invalid={Boolean(profileForm.formState.errors.phone)}
+                  {...profileForm.register("phone")}
+                />
               </Field>
               <Field label={store.locale === "zh-CN" ? "角色" : "Role"}>
-                <input disabled value={store.staff?.role ?? "—"} />
+                <Input disabled value={store.staff?.role ?? "—"} />
               </Field>
-              <button
+              <Button
                 className="button button-primary"
-                onClick={() => {
-                  store.updateStaff({ displayName: name })
-                  toast.success(copy.save)
-                }}
+                onClick={profileForm.handleSubmit(
+                  (profile) =>
+                    void executeAction(
+                      () => store.updateStaff(profile),
+                      store.locale,
+                      copy.save
+                    ).then((result) => {
+                      if (!result.ok) return
+                      const current = useProductStore.getState().staff
+                      if (!current) return
+                      setStaffAccounts((accounts) =>
+                        accounts.map((account) =>
+                          account.id === current.id ? { ...account, ...current } : account
+                        )
+                      )
+                    })
+                )}
               >
                 {copy.save}
-              </button>
+              </Button>
             </div>
           </Section>
+          {store.staff?.role === "admin" && (
+            <Section
+              title={store.locale === "zh-CN" ? "员工账号" : "Staff accounts"}
+              action={
+                <Button className="button button-primary" onClick={() => openStaffEditor()}>
+                  <Plus />
+                  {store.locale === "zh-CN" ? "新增员工" : "Add staff"}
+                </Button>
+              }
+            >
+              <div id="staff">
+                {staffLoading ? (
+                  <QueryLoading locale={store.locale} />
+                ) : (
+                  <div className="data-table compact">
+                    <div className="table-head">
+                      <span>{store.locale === "zh-CN" ? "员工" : "Staff"}</span>
+                      <span>{store.locale === "zh-CN" ? "手机号" : "Phone"}</span>
+                      <span>{store.locale === "zh-CN" ? "角色" : "Role"}</span>
+                      <span>{copy.status}</span>
+                      <span>{copy.action}</span>
+                    </div>
+                    {staffAccounts.map((account) => (
+                      <div className="table-row" key={account.id}>
+                        <span data-label={store.locale === "zh-CN" ? "员工" : "Staff"}>
+                          <strong>{account.displayName}</strong>
+                          <small>@{account.username}</small>
+                        </span>
+                        <span data-label={store.locale === "zh-CN" ? "手机号" : "Phone"}>
+                          {account.phone}
+                        </span>
+                        <span data-label={store.locale === "zh-CN" ? "角色" : "Role"}>
+                          {account.role}
+                        </span>
+                        <span data-label={copy.status}>
+                          <StatusPill value={account.enabled ? "ENABLED" : "DISABLED"} />
+                        </span>
+                        <span data-label={copy.action}>
+                          <Button
+                            variant="link"
+                            size="sm"
+                            className="text-button"
+                            onClick={() => openStaffEditor(account)}
+                          >
+                            {copy.edit}
+                          </Button>
+                          {account.enabled && account.id !== store.staff?.id && (
+                            <ConfirmAction
+                              trigger={
+                                <Button
+                                  variant="link"
+                                  size="sm"
+                                  className="text-button danger-text"
+                                >
+                                  {store.locale === "zh-CN" ? "停用" : "Disable"}
+                                </Button>
+                              }
+                              title={
+                                store.locale === "zh-CN"
+                                  ? "确认停用员工账号"
+                                  : "Disable staff account?"
+                              }
+                              description={
+                                store.locale === "zh-CN"
+                                  ? `“${account.displayName}”将立即失去访问权限，所有刷新会话也会撤销。`
+                                  : `${account.displayName} loses access immediately and all refresh sessions are revoked.`
+                              }
+                              cancelLabel={copy.cancel}
+                              confirmLabel={store.locale === "zh-CN" ? "停用" : "Disable"}
+                              onConfirm={() => disableStaffAccount(account)}
+                            />
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
           <Section title={copy.security}>
             <div id="security" className="settings-rows">
-              <button>
+              <Button onClick={() => setPasswordOpen(true)}>
                 <ShieldCheck />
                 <span>
                   <strong>{copy.changePassword}</strong>
                   <small>
-                    {store.locale === "zh-CN" ? "最近更新于 2026-07-10" : "Last updated 2026-07-10"}
+                    {store.locale === "zh-CN"
+                      ? "修改密码将撤销全部活动会话"
+                      : "Changing it revokes every active session"}
                   </small>
                 </span>
                 <ChevronRight />
-              </button>
-              <button>
+              </Button>
+              <Button
+                onClick={() =>
+                  void executeAction(api.sessions, store.locale).then((result) => {
+                    if (result.ok) {
+                      setSessions(result.value)
+                      setSessionsOpen(true)
+                    }
+                  })
+                }
+              >
                 <Radio />
                 <span>
                   <strong>{copy.sessions}</strong>
                   <small>
                     {store.locale === "zh-CN"
-                      ? "当前桌面客户端 · 南京"
-                      : "Current desktop client · Nanjing"}
+                      ? "查看并撤销已登录的设备"
+                      : "Review and revoke signed-in devices"}
                   </small>
                 </span>
                 <ChevronRight />
-              </button>
+              </Button>
             </div>
           </Section>
           <Section title={copy.bindings}>
@@ -1498,34 +2663,52 @@ function SettingsView() {
                     <strong>{store.uavs.find((item) => item.id === binding.uavId)?.code}</strong>
                     <small>{formatDate(binding.boundAt, store.locale)}</small>
                   </span>
-                  <button className="text-button" onClick={() => store.unbindDevice(binding.id)}>
+                  <Button
+                    className="text-button"
+                    onClick={() =>
+                      void executeAction(() => store.unbindDevice(binding.id), store.locale)
+                    }
+                  >
                     {store.locale === "zh-CN" ? "解绑" : "Unbind"}
-                  </button>
+                  </Button>
                 </div>
               ))}
-              <select
+              {bindingHistory.map((binding) => (
+                <div key={binding.id}>
+                  <X />
+                  <span>
+                    <strong>{store.uavs.find((item) => item.id === binding.uavId)?.code}</strong>
+                    <small>
+                      {store.locale === "zh-CN" ? "已解绑" : "Unbound"} ·{" "}
+                      {formatDate(binding.unboundAt!, store.locale)}
+                    </small>
+                  </span>
+                </div>
+              ))}
+              <NativeSelect
                 onChange={(e) => {
-                  if (e.target.value) store.bindDevice(Number(e.target.value))
+                  if (e.target.value)
+                    void executeAction(() => store.bindDevice(Number(e.target.value)), store.locale)
                   e.target.value = ""
                 }}
                 defaultValue=""
               >
-                <option value="" disabled>
+                <NativeSelectOption value="" disabled>
                   {store.locale === "zh-CN" ? "绑定其他设备" : "Bind another device"}
-                </option>
+                </NativeSelectOption>
                 {store.uavs
                   .filter((uav) => !bindings.some((binding) => binding.uavId === uav.id))
                   .map((uav) => (
-                    <option key={uav.id} value={uav.id}>
+                    <NativeSelectOption key={uav.id} value={uav.id}>
                       {uav.code}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-              </select>
+              </NativeSelect>
             </div>
           </Section>
           <Section title={copy.about}>
             <div id="about" className="settings-rows">
-              <button
+              <Button
                 onClick={() => {
                   store.clearNonAuthCache()
                   toast.success(copy.cacheCleared)
@@ -1541,15 +2724,15 @@ function SettingsView() {
                   </small>
                 </span>
                 <ChevronRight />
-              </button>
-              <button onClick={checkUpdate}>
+              </Button>
+              <Button onClick={checkUpdate}>
                 <RotateCcw />
                 <span>
                   <strong>{copy.checkUpdate}</strong>
-                  <small>{updateMessage || "v1.0.0"}</small>
+                  <small>{updateMessage || platformInfo?.appVersion || "v0.1.0"}</small>
                 </span>
                 <ChevronRight />
-              </button>
+              </Button>
               <div className="about-line">
                 <span>
                   {copy.brand} · {copy.console}
@@ -1560,26 +2743,314 @@ function SettingsView() {
                     : "WEB · API v1"}
                 </code>
               </div>
-              <button
+              <Button
                 className="danger-row"
-                onClick={() => {
-                  if (process.env.NEXT_PUBLIC_API_MODE === "remote") {
-                    void import("@/lib/api/client").then(({ api }) => api.logout())
-                  }
-                  store.logout()
-                  window.location.href = "/login"
-                }}
+                disabled={loggingOut}
+                data-state={loggingOut ? "loading" : undefined}
+                onClick={() =>
+                  void (async () => {
+                    setLoggingOut(true)
+                    if (isRemoteApi) {
+                      try {
+                        await api.logout()
+                      } catch {
+                        toast.warning(
+                          store.locale === "zh-CN"
+                            ? "服务端会话暂未撤销，已安全清除本机登录状态。"
+                            : "The server session could not be revoked; local sign-in state was cleared."
+                        )
+                      }
+                    }
+                    await finishLogout()
+                  })()
+                }
               >
-                <X />
+                {loggingOut ? <Spinner /> : <X />}
                 <span>
-                  <strong>{copy.logout}</strong>
+                  <strong>
+                    {loggingOut
+                      ? store.locale === "zh-CN"
+                        ? "正在退出…"
+                        : "Signing out…"
+                      : copy.logout}
+                  </strong>
                 </span>
                 <ChevronRight />
-              </button>
+              </Button>
             </div>
           </Section>
         </div>
       </div>
+      <Dialog open={editingStaff !== null} onOpenChange={(open) => !open && setEditingStaff(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              <UserCog />
+              {editingStaff?.id
+                ? store.locale === "zh-CN"
+                  ? "编辑员工账号"
+                  : "Edit staff account"
+                : store.locale === "zh-CN"
+                  ? "新增员工账号"
+                  : "Add staff account"}
+            </DialogTitle>
+            <DialogDescription>
+              {store.locale === "zh-CN"
+                ? "管理员拥有全部权限；经理可监控、控制并处理订单与任务。"
+                : "Administrators have full access; managers can monitor, control, and process operations."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="form-grid">
+            <Field
+              label={store.locale === "zh-CN" ? "用户名" : "Username"}
+              error={
+                staffForm.formState.errors.username
+                  ? store.locale === "zh-CN"
+                    ? "请输入 3–32 位字母、数字或 . _ -"
+                    : "Use 3–32 letters, numbers, or . _ -"
+                  : undefined
+              }
+            >
+              <Input
+                autoComplete="off"
+                aria-invalid={Boolean(staffForm.formState.errors.username)}
+                {...staffForm.register("username")}
+              />
+            </Field>
+            <Field
+              label={store.locale === "zh-CN" ? "显示名称" : "Display name"}
+              error={
+                staffForm.formState.errors.displayName
+                  ? store.locale === "zh-CN"
+                    ? "请输入显示名称"
+                    : "Enter a display name"
+                  : undefined
+              }
+            >
+              <Input
+                aria-invalid={Boolean(staffForm.formState.errors.displayName)}
+                {...staffForm.register("displayName")}
+              />
+            </Field>
+            <Field
+              label={store.locale === "zh-CN" ? "手机号" : "Phone"}
+              error={
+                staffForm.formState.errors.phone
+                  ? store.locale === "zh-CN"
+                    ? "请输入有效的中国大陆手机号"
+                    : "Enter a valid mainland China mobile number"
+                  : undefined
+              }
+            >
+              <Input
+                inputMode="tel"
+                aria-invalid={Boolean(staffForm.formState.errors.phone)}
+                {...staffForm.register("phone")}
+              />
+            </Field>
+            <Field
+              label={
+                editingStaff?.id
+                  ? store.locale === "zh-CN"
+                    ? "重置密码（可选）"
+                    : "Reset password (optional)"
+                  : store.locale === "zh-CN"
+                    ? "初始密码"
+                    : "Initial password"
+              }
+              error={
+                staffForm.formState.errors.password
+                  ? store.locale === "zh-CN"
+                    ? "至少需要 8 个字符"
+                    : "Use at least 8 characters"
+                  : undefined
+              }
+            >
+              <Input
+                type="password"
+                autoComplete="new-password"
+                aria-invalid={Boolean(staffForm.formState.errors.password)}
+                {...staffForm.register("password")}
+              />
+            </Field>
+            <Field label={store.locale === "zh-CN" ? "角色" : "Role"}>
+              <NativeSelect
+                value={staffRole}
+                disabled={editingStaff?.id === store.staff?.id}
+                onChange={(event) =>
+                  staffForm.setValue("role", event.target.value as StaffAccount["role"], {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })
+                }
+              >
+                <NativeSelectOption value="manager">manager</NativeSelectOption>
+                <NativeSelectOption value="admin">admin</NativeSelectOption>
+              </NativeSelect>
+            </Field>
+            {editingStaff?.id && (
+              <Field label={copy.status}>
+                <NativeSelect
+                  value={staffEnabled ? "enabled" : "disabled"}
+                  disabled={editingStaff.id === store.staff?.id}
+                  onChange={(event) =>
+                    staffForm.setValue("enabled", event.target.value === "enabled", {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    })
+                  }
+                >
+                  <NativeSelectOption value="enabled">
+                    {store.locale === "zh-CN" ? "启用" : "Enabled"}
+                  </NativeSelectOption>
+                  <NativeSelectOption value="disabled">
+                    {store.locale === "zh-CN" ? "停用" : "Disabled"}
+                  </NativeSelectOption>
+                </NativeSelect>
+              </Field>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="button button-secondary"
+              onClick={() => setEditingStaff(null)}
+            >
+              {copy.cancel}
+            </Button>
+            <Button
+              className="button button-primary"
+              disabled={staffSaving}
+              onClick={staffForm.handleSubmit(saveStaffAccount)}
+            >
+              <PendingLabel
+                pending={staffSaving}
+                pendingLabel={store.locale === "zh-CN" ? "保存中…" : "Saving…"}
+              >
+                {copy.save}
+              </PendingLabel>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={passwordOpen} onOpenChange={setPasswordOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{copy.changePassword}</DialogTitle>
+            <DialogDescription>
+              {store.locale === "zh-CN"
+                ? "修改后将撤销所有活动会话，并要求重新登录。"
+                : "Changing the password revokes every active session and requires a new login."}
+            </DialogDescription>
+          </DialogHeader>
+          <Field label={store.locale === "zh-CN" ? "当前密码" : "Current password"}>
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+            />
+          </Field>
+          <Field
+            label={store.locale === "zh-CN" ? "新密码" : "New password"}
+            error={
+              newPassword && newPassword.length < 8
+                ? store.locale === "zh-CN"
+                  ? "至少需要 8 个字符"
+                  : "Use at least 8 characters"
+                : undefined
+            }
+          >
+            <Input
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+            />
+          </Field>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="button button-secondary"
+              onClick={() => setPasswordOpen(false)}
+            >
+              {copy.cancel}
+            </Button>
+            <Button
+              className="button button-primary"
+              disabled={!currentPassword || newPassword.length < 8}
+              onClick={() =>
+                void executeAction(
+                  () => api.changePassword(currentPassword, newPassword),
+                  store.locale,
+                  copy.save
+                ).then(async (result) => {
+                  if (!result.ok) return
+                  await finishLogout()
+                })
+              }
+            >
+              {copy.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={sessionsOpen} onOpenChange={setSessionsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{copy.sessions}</DialogTitle>
+            <DialogDescription>
+              {store.locale === "zh-CN"
+                ? "撤销不认识的设备会立即阻止其刷新登录状态。"
+                : "Revoke an unknown device to prevent it from refreshing its login."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="binding-list">
+            {sessions.map((session) => (
+              <div key={session.id}>
+                <Radio />
+                <span>
+                  <strong>{session.userAgent}</strong>
+                  <small>
+                    {session.ipAddress} · {formatDate(session.createdAt, store.locale)}
+                    {session.current ? ` · ${store.locale === "zh-CN" ? "当前" : "Current"}` : ""}
+                  </small>
+                </span>
+                <ConfirmAction
+                  trigger={
+                    <Button variant="link" size="sm" className="text-button danger-text">
+                      {store.locale === "zh-CN" ? "撤销" : "Revoke"}
+                    </Button>
+                  }
+                  title={store.locale === "zh-CN" ? "确认撤销会话" : "Revoke session?"}
+                  description={
+                    session.current
+                      ? store.locale === "zh-CN"
+                        ? "这是当前会话，撤销后将立即退出登录。"
+                        : "This is the current session. Revoking it signs you out immediately."
+                      : store.locale === "zh-CN"
+                        ? "该设备将无法继续刷新登录状态。"
+                        : "This device will no longer be able to refresh its session."
+                  }
+                  cancelLabel={copy.cancel}
+                  confirmLabel={store.locale === "zh-CN" ? "确认撤销" : "Revoke"}
+                  onConfirm={() => {
+                    void executeAction(() => api.revokeSession(session.id), store.locale).then(
+                      async (result) => {
+                        if (!result.ok) return
+                        setSessions((items) => items.filter((item) => item.id !== session.id))
+                        if (session.current) {
+                          await finishLogout()
+                        }
+                      }
+                    )
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
@@ -1596,12 +3067,13 @@ function LoginView() {
     setLoading(true)
     setError("")
     try {
-      if (process.env.NEXT_PUBLIC_API_MODE === "remote") {
+      if (isRemoteApi) {
         const { api } = await import("@/lib/api/client")
         const staff = await api.login(username, password)
         useProductStore.setState({ authenticated: true, staff })
-      } else if (!store.login(username, password)) {
-        throw new Error("invalid")
+      } else {
+        resumeSessionRecovery()
+        if (!store.login(username, password)) throw new Error("invalid")
       }
       window.location.href = "/"
     } catch {
@@ -1626,33 +3098,38 @@ function LoginView() {
         </div>
       </section>
       <section className="login-form-panel">
-        <button
+        <Button
           className="locale-button"
           onClick={() => store.setLocale(store.locale === "zh-CN" ? "en" : "zh-CN")}
         >
           {store.locale === "zh-CN" ? "EN" : "中"}
-        </button>
+        </Button>
         <form onSubmit={submit}>
           <h2>{copy.login}</h2>
           <p>{copy.loginIntro}</p>
           <Field label={copy.username}>
-            <input
+            <Input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
             />
           </Field>
           <Field label={copy.password} error={error}>
-            <input
+            <Input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
             />
           </Field>
-          <button className="button button-primary button-wide" disabled={loading}>
-            {loading ? (store.locale === "zh-CN" ? "登录中…" : "Signing in…") : copy.login}
-          </button>
+          <Button className="button button-primary button-wide" disabled={loading}>
+            <PendingLabel
+              pending={loading}
+              pendingLabel={store.locale === "zh-CN" ? "登录中…" : "Signing in…"}
+            >
+              {copy.login}
+            </PendingLabel>
+          </Button>
           <small>{copy.loginDemo}</small>
         </form>
         <footer>© 2026 · ZHIYUAN OPERATIONS · v1.0.0</footer>
@@ -1696,8 +3173,7 @@ export function ProductPage({ view }: { view: ProductView }) {
       <main className="product-page" data-view={view}>
         {content}
         <footer className="app-footer">
-          © 2026 · ZHIYUAN OPERATIONS · API v1 ·{" "}
-          {process.env.NEXT_PUBLIC_API_MODE === "remote" ? "REMOTE" : "SIMULATOR"}
+          © 2026 · ZHIYUAN OPERATIONS · API v1 · {isRemoteApi ? "REMOTE" : "SIMULATOR"}
         </footer>
       </main>
     </AppShell>

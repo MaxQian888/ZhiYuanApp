@@ -46,7 +46,7 @@ export default function RootLayout({
       <body
         className={`${spaceGrotesk.variable} ${inter.variable} ${jetBrainsMono.variable} antialiased`}
       >
-        <TooltipProvider>
+        <TooltipProvider delayDuration={900}>
           <ProductProviders>{children}</ProductProviders>
         </TooltipProvider>
       </body>

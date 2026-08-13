@@ -28,6 +28,7 @@ public class UserController {
     @PutMapping("/{id}") public ApiResponse<Models.User> update(@PathVariable long id,@Valid @RequestBody UserRequest body){return ApiResponse.ok(store.updateUser(id,body.username(),body.phone()));}
     @DeleteMapping("/{id}") public ApiResponse<Void> delete(@PathVariable long id){store.deleteUser(id);return ApiResponse.ok(null);}
     @PostMapping("/{id}/addresses") public ApiResponse<Models.Address> address(@PathVariable long id,@Valid @RequestBody AddressRequest body){return ApiResponse.ok(store.addAddress(id,body.receiverName(),body.receiverPhone(),body.detail(),body.latitude(),body.longitude(),body.isDefault()));}
+    @PutMapping("/{userId}/addresses/{addressId}") public ApiResponse<Models.Address> updateAddress(@PathVariable long userId,@PathVariable long addressId,@Valid @RequestBody AddressRequest body){return ApiResponse.ok(store.updateAddress(userId,addressId,body.receiverName(),body.receiverPhone(),body.detail(),body.latitude(),body.longitude(),body.isDefault()));}
     @PatchMapping("/{userId}/addresses/{addressId}/default") public ApiResponse<Models.Address> defaultAddress(@PathVariable long userId,@PathVariable long addressId){return ApiResponse.ok(store.setDefaultAddress(userId,addressId));}
     @DeleteMapping("/{userId}/addresses/{addressId}") public ApiResponse<Void> deleteAddress(@PathVariable long userId,@PathVariable long addressId){store.deleteAddress(userId,addressId);return ApiResponse.ok(null);}
 }

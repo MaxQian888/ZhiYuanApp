@@ -20,6 +20,10 @@ export interface Staff {
   phone: string
 }
 
+export interface StaffAccount extends Staff {
+  enabled: boolean
+}
+
 export interface Uav {
   id: number
   code: string
@@ -110,6 +114,7 @@ export interface Order {
   totalPrice: number
   status: OrderStatus
   createdAt: string
+  addressSnapshot?: { receiverName: string; receiverPhone: string; detail: string }
   items: OrderItem[]
 }
 
@@ -120,6 +125,7 @@ export interface UavTask {
   taskStatus: TaskStatus
   startTime?: string
   endTime?: string
+  failureReason?: string
 }
 
 export interface HibernatePod {
@@ -135,6 +141,7 @@ export interface DeviceBinding {
   staffId: number
   uavId: number
   boundAt: string
+  unboundAt?: string
 }
 
 export interface DashboardSummary {

@@ -1,6 +1,6 @@
 # ZhiYuan Operations / 智鸢无人机运营平台
 
-智鸢是面向 `admin` 与 `manager` 的无人机运营控制台，覆盖设备监控与控制、地图、语音指令、日志告警、休眠仓、用户地址、商品、订单、配送任务、账户安全与更新检查。Web、响应式移动端和 Tauri 桌面端共享同一套功能与 API 契约。
+智鸢是面向 `admin` 与 `manager` 的无人机运营控制台，覆盖设备监控与控制、地图、语音指令、日志告警、休眠仓、用户地址、商品、订单、配送任务、员工账号、账户安全与更新检查。Web、响应式移动端和 Tauri 桌面端共享同一套功能与 API 契约。
 
 界面遵循 Hallmark Workbench / Cobalt：全宽信息带、语义表格、发丝分隔线和行内展开；不使用卡片墙、渐变、玻璃或阴影容器。中文为默认语言，可在界面中切换英文。
 
@@ -19,16 +19,16 @@
 pnpm install
 cp .env.example .env.local
 docker compose up -d mysql
-cd server && JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn spring-boot:run
+cd server && DB_USERNAME=zhiyuan DB_PASSWORD=zhiyuan-dev JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn spring-boot:run
 cd .. && pnpm dev
 ```
 
 打开 [http://localhost:3000](http://localhost:3000)，开发账号为 `admin / admin123` 或 `manager / admin123`。开发种子位于 `server/src/main/resources/db/dev`；生产必须设置 `FLYWAY_LOCATIONS=classpath:db/migration`，不会写入演示数据。
 
-前端默认使用完整内置模拟数据，便于无后端预览。要连接 Spring API，在 `.env.local` 中设置：
+`.env.example` 默认连接 Spring API，使所有写操作进入数据库。仅在需要脱离后端预览界面时，才把 `NEXT_PUBLIC_API_MODE` 改为 `simulator`：
 
 ```dotenv
-NEXT_PUBLIC_API_MODE=remote
+NEXT_PUBLIC_API_MODE=simulator
 NEXT_PUBLIC_API_URL=http://localhost:8080
 ```
 
@@ -49,6 +49,8 @@ pnpm typecheck
 pnpm test --runInBand
 pnpm build
 pnpm exec playwright test
+docker compose up -d mysql
+pnpm test:e2e:remote # 真实 Spring + MySQL + HttpOnly Cookie 链路
 cd server && JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn verify
 cd ../src-tauri && cargo test
 cd .. && pnpm tauri build

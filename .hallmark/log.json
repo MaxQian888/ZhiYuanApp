@@ -1,6 +1,18 @@
 [
   {
     "date": "2026-08-12",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "enrichment": "none",
+    "brief": "智鸢运营控制台视觉深化与响应式精修",
+    "slopTest": "pass (58/58)",
+    "navigation": "N13 grouped command rail",
+    "footer": "Ft2 utility line",
+    "responsive": [320, 375, 414, 768, 800, 1280, 1440]
+  },
+  {
+    "date": "2026-08-12",
     "macrostructure": "Workbench",
     "theme": "Cobalt",
     "enrichment": "none",

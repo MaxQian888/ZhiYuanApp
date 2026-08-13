@@ -8,6 +8,7 @@ public class AdminEntity {
     private String role;
     private String phone;
     private Boolean enabled;
+    private Long tokenVersion;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -23,4 +24,6 @@ public class AdminEntity {
     public void setPhone(String phone) { this.phone = phone; }
     public Boolean getEnabled() { return enabled; }
     public void setEnabled(Boolean enabled) { this.enabled = enabled; }
+    public Long getTokenVersion() { return tokenVersion; }
+    public void setTokenVersion(Long tokenVersion) { this.tokenVersion = tokenVersion; }
 }

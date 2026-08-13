@@ -2,7 +2,9 @@ import { z } from "zod"
 import { clearRefreshToken, isTauri, loadRefreshToken, saveRefreshToken } from "@/lib/tauri"
 import {
   alertSchema,
+  addressSchema,
   bindingSchema,
+  commandSchema,
   dashboardSchema,
   flightLogSchema,
   goodsSchema,
@@ -10,12 +12,14 @@ import {
   pageSchema,
   podSchema,
   staffSchema,
+  staffAccountSchema,
   taskSchema,
   uavSchema,
   userSchema,
 } from "@/lib/api/schemas"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
+const EXPLICIT_LOGOUT_KEY = "zhiyuan-explicit-logout"
 let accessToken: string | null = null
 
 export class ApiError extends Error {
@@ -31,6 +35,32 @@ export class ApiError extends Error {
 
 export function setAccessToken(token: string | null) {
   accessToken = token
+}
+
+export function suppressSessionRecovery() {
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(EXPLICIT_LOGOUT_KEY, "true")
+  } catch {
+    // Storage is optional; the caller still clears in-memory authentication state.
+  }
+}
+
+export function resumeSessionRecovery() {
+  try {
+    if (typeof window !== "undefined") window.localStorage.removeItem(EXPLICIT_LOGOUT_KEY)
+  } catch {
+    // A successful explicit login already provides the active in-memory session.
+  }
+}
+
+export function isSessionRecoverySuppressed() {
+  try {
+    return (
+      typeof window !== "undefined" && window.localStorage.getItem(EXPLICIT_LOGOUT_KEY) === "true"
+    )
+  } catch {
+    return true
+  }
 }
 
 export function parseApiResponse<T>(value: unknown, dataSchema: z.ZodType<T>) {
@@ -51,7 +81,7 @@ async function refreshAccessToken(): Promise<boolean> {
   if (!response.ok) return false
   const payload = parseApiResponse(
     await response.json(),
-    z.object({ accessToken: z.string(), refreshToken: z.string().optional() })
+    z.object({ accessToken: z.string(), refreshToken: z.string().nullish() })
   )
   setAccessToken(payload.data.accessToken)
   if (payload.data.refreshToken) await saveRefreshToken(payload.data.refreshToken)
@@ -84,13 +114,25 @@ export async function apiRequest<T>(
   return parseApiResponse(payload, schema).data
 }
 
+async function fetchAllPages<T>(path: string, schema: z.ZodType<T>): Promise<T[]> {
+  const separator = path.includes("?") ? "&" : "?"
+  const first = await apiRequest(`${path}${separator}page=1&size=100`, pageSchema(schema))
+  if (first.totalPages <= 1) return first.items
+  const remaining = await Promise.all(
+    Array.from({ length: first.totalPages - 1 }, (_, index) =>
+      apiRequest(`${path}${separator}page=${index + 2}&size=100`, pageSchema(schema))
+    )
+  )
+  return [first, ...remaining].flatMap((page) => page.items)
+}
+
 export const api = {
   login: async (username: string, password: string) => {
     const value = await apiRequest(
       "/api/v1/auth/login",
       z.object({
         accessToken: z.string(),
-        refreshToken: z.string().optional(),
+        refreshToken: z.string().nullish(),
         staff: staffSchema,
       }),
       {
@@ -100,16 +142,67 @@ export const api = {
     )
     setAccessToken(value.accessToken)
     if (value.refreshToken) await saveRefreshToken(value.refreshToken)
+    resumeSessionRecovery()
     return value.staff
   },
   me: () => apiRequest("/api/v1/auth/me", staffSchema),
+  staffAccounts: () => apiRequest("/api/v1/admins", z.array(staffAccountSchema)),
+  createStaffAccount: (account: {
+    username: string
+    password: string
+    displayName: string
+    role: "admin" | "manager"
+    phone: string
+  }) =>
+    apiRequest("/api/v1/admins", staffAccountSchema, {
+      method: "POST",
+      body: JSON.stringify(account),
+    }),
+  updateStaffAccount: (
+    id: number,
+    account: {
+      username: string
+      password?: string
+      displayName: string
+      role: "admin" | "manager"
+      phone: string
+      enabled: boolean
+    }
+  ) =>
+    apiRequest(`/api/v1/admins/${id}`, staffAccountSchema, {
+      method: "PUT",
+      body: JSON.stringify(account),
+    }),
+  disableStaffAccount: (id: number) =>
+    apiRequest(`/api/v1/admins/${id}`, staffAccountSchema, { method: "DELETE" }),
   logout: async () => {
-    await apiRequest("/api/v1/auth/logout", z.null(), { method: "POST" })
+    const refreshToken = await loadRefreshToken()
+    await apiRequest("/api/v1/auth/logout", z.null(), {
+      method: "POST",
+      ...(refreshToken ? { headers: { "X-Refresh-Token": refreshToken } } : {}),
+    })
+    setAccessToken(null)
+    await clearRefreshToken()
+  },
+  forgetAuthentication: async () => {
     setAccessToken(null)
     await clearRefreshToken()
   },
   dashboard: () => apiRequest("/api/v1/dashboard", dashboardSchema),
+  search: (query: string) =>
+    apiRequest(
+      `/api/v1/search?q=${encodeURIComponent(query)}`,
+      z.array(
+        z.object({
+          type: z.string(),
+          id: z.number(),
+          title: z.string(),
+          href: z.string(),
+        })
+      )
+    ),
   uavs: (query = "") => apiRequest(`/api/v1/uavs${query}`, pageSchema(uavSchema)),
+  allUavs: () => fetchAllPages("/api/v1/uavs", uavSchema),
   uav: (id: number) => apiRequest(`/api/v1/uavs/${id}`, uavSchema),
   command: (id: number, body: { type: string; source: string; transcript?: string }) =>
     apiRequest(
@@ -117,15 +210,146 @@ export const api = {
       z.object({ commandId: z.string(), status: z.literal("QUEUED"), adapter: z.string() }),
       { method: "POST", body: JSON.stringify(body) }
     ),
+  commands: () => apiRequest("/api/v1/uavs/commands", z.array(commandSchema)),
   flightLogs: (id: number) =>
     apiRequest(`/api/v1/uavs/${id}/flight-logs`, z.array(flightLogSchema)),
   alerts: () => apiRequest("/api/v1/alerts", z.array(alertSchema)),
+  resolveAlert: (id: number) =>
+    apiRequest(`/api/v1/alerts/${id}/resolve`, alertSchema, { method: "PATCH" }),
   pods: () => apiRequest("/api/v1/pods", z.array(podSchema)),
+  updatePod: (id: number, doorStatus: string, uavId?: number) =>
+    apiRequest(`/api/v1/pods/${id}`, podSchema, {
+      method: "PATCH",
+      body: JSON.stringify({ doorStatus, uavId }),
+    }),
   bindings: () => apiRequest("/api/v1/device-bindings", z.array(bindingSchema)),
+  bindDevice: (staffId: number, uavId: number) =>
+    apiRequest("/api/v1/device-bindings", bindingSchema, {
+      method: "POST",
+      body: JSON.stringify({ staffId, uavId }),
+    }),
+  unbindDevice: (id: number) =>
+    apiRequest(`/api/v1/device-bindings/${id}`, z.null(), { method: "DELETE" }),
   users: () => apiRequest("/api/v1/users", pageSchema(userSchema)),
-  goods: () => apiRequest("/api/v1/goods", pageSchema(goodsSchema)),
+  allUsers: () => fetchAllPages("/api/v1/users", userSchema),
+  saveUser: (user: { id?: number; username: string; phone: string }) =>
+    apiRequest(user.id ? `/api/v1/users/${user.id}` : "/api/v1/users", userSchema, {
+      method: user.id ? "PUT" : "POST",
+      body: JSON.stringify({ username: user.username, phone: user.phone }),
+    }),
+  deleteUser: (id: number) => apiRequest(`/api/v1/users/${id}`, z.null(), { method: "DELETE" }),
+  saveAddress: (
+    userId: number,
+    address: {
+      id?: number
+      receiverName: string
+      receiverPhone: string
+      detail: string
+      latitude: number
+      longitude: number
+      isDefault: boolean
+    }
+  ) =>
+    apiRequest(
+      address.id
+        ? `/api/v1/users/${userId}/addresses/${address.id}`
+        : `/api/v1/users/${userId}/addresses`,
+      addressSchema,
+      { method: address.id ? "PUT" : "POST", body: JSON.stringify(address) }
+    ),
+  deleteAddress: (userId: number, addressId: number) =>
+    apiRequest(`/api/v1/users/${userId}/addresses/${addressId}`, z.null(), { method: "DELETE" }),
+  setDefaultAddress: (userId: number, addressId: number) =>
+    apiRequest(`/api/v1/users/${userId}/addresses/${addressId}/default`, addressSchema, {
+      method: "PATCH",
+    }),
+  goods: (query = "") => apiRequest(`/api/v1/goods${query}`, pageSchema(goodsSchema)),
+  allGoods: () => fetchAllPages("/api/v1/goods", goodsSchema),
+  saveGoods: (goods: {
+    id?: number
+    name: string
+    category: string
+    price: number
+    stock: number
+    weight: number
+    status: number
+  }) =>
+    apiRequest(goods.id ? `/api/v1/goods/${goods.id}` : "/api/v1/goods", goodsSchema, {
+      method: goods.id ? "PUT" : "POST",
+      body: JSON.stringify(goods),
+    }),
+  deleteGoods: (ids: number[]) =>
+    ids.length === 1
+      ? apiRequest(`/api/v1/goods/${ids[0]}`, z.null(), { method: "DELETE" })
+      : apiRequest("/api/v1/goods", z.null(), {
+          method: "DELETE",
+          body: JSON.stringify({ ids }),
+        }),
+  toggleGoods: (id: number) =>
+    apiRequest(`/api/v1/goods/${id}/status`, goodsSchema, { method: "PATCH" }),
   orders: () => apiRequest("/api/v1/orders", pageSchema(orderSchema)),
+  allOrders: () => fetchAllPages("/api/v1/orders", orderSchema),
+  createOrder: (userId: number, addressId: number, items: { goodsId: number; count: number }[]) =>
+    apiRequest("/api/v1/orders", orderSchema, {
+      method: "POST",
+      body: JSON.stringify({ userId, addressId, items }),
+    }),
+  dispatchOrder: (orderId: number, uavId: number) =>
+    apiRequest(`/api/v1/orders/${orderId}/dispatch`, taskSchema, {
+      method: "POST",
+      body: JSON.stringify({ uavId }),
+    }),
+  cancelOrder: (orderId: number) =>
+    apiRequest(`/api/v1/orders/${orderId}/cancel`, orderSchema, { method: "POST" }),
   tasks: () => apiRequest("/api/v1/tasks", pageSchema(taskSchema)),
+  allTasks: () => fetchAllPages("/api/v1/tasks", taskSchema),
+  transitionTask: (id: number, target: "FLYING" | "ARRIVED" | "FAILED", failureReason?: string) => {
+    const action = { FLYING: "start", ARRIVED: "arrive", FAILED: "fail" }[target]
+    return apiRequest(`/api/v1/tasks/${id}/${action}`, taskSchema, {
+      method: "POST",
+      ...(target === "FAILED" ? { body: JSON.stringify({ reason: failureReason }) } : {}),
+    })
+  },
+  updateProfile: (displayName: string, phone: string) =>
+    apiRequest("/api/v1/auth/me", staffSchema, {
+      method: "PATCH",
+      body: JSON.stringify({ displayName, phone }),
+    }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    apiRequest("/api/v1/auth/password", z.null(), {
+      method: "PATCH",
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }),
+  sessions: async () => {
+    const refreshToken = await loadRefreshToken()
+    return apiRequest(
+      "/api/v1/auth/sessions",
+      z.array(
+        z.object({
+          id: z.string(),
+          userAgent: z.string(),
+          ipAddress: z.string(),
+          createdAt: z.string().datetime({ offset: true }),
+          expiresAt: z.string().datetime({ offset: true }),
+          current: z.boolean(),
+        })
+      ),
+      refreshToken ? { headers: { "X-Refresh-Token": refreshToken } } : {}
+    )
+  },
+  revokeSession: (id: string) =>
+    apiRequest(`/api/v1/auth/sessions?id=${encodeURIComponent(id)}`, z.null(), {
+      method: "DELETE",
+    }),
+  version: () =>
+    apiRequest(
+      "/api/v1/system/version",
+      z.object({
+        configured: z.boolean(),
+        currentVersion: z.string(),
+        manifestUrl: z.string().optional(),
+      })
+    ),
 }
 
 export type SseEvent = { event: string; data: unknown }
@@ -159,7 +383,19 @@ export async function streamTelemetry(
     try {
       const headers = new Headers({ Accept: "text/event-stream" })
       if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
-      const response = await fetch(`${API_URL}/api/v1/uavs/telemetry/stream`, { headers, signal })
+      let response = await fetch(`${API_URL}/api/v1/uavs/telemetry/stream`, {
+        headers,
+        signal,
+        credentials: "include",
+      })
+      if (response.status === 401 && (await refreshAccessToken())) {
+        if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
+        response = await fetch(`${API_URL}/api/v1/uavs/telemetry/stream`, {
+          headers,
+          signal,
+          credentials: "include",
+        })
+      }
       if (!response.ok || !response.body) throw new ApiError(response.status, response.statusText)
       onState("live")
       delay = 500
