@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { DesktopTitlebar } from "@/components/product/desktop-titlebar"
 import { Field } from "@/components/product/primitives"
@@ -15,6 +16,7 @@ import { useProductStore } from "@/stores/product-store"
 
 export function LoginView() {
   const store = useProductStore()
+  const router = useRouter()
   const desktopRuntime = useTauriRuntime()
   const copy = useCopy(store.locale)
   const [username, setUsername] = useState(isRemoteApi ? "" : "admin")
@@ -55,7 +57,9 @@ export function LoginView() {
         resumeSessionRecovery()
         if (!store.login(username, password)) throw new Error("invalid")
       }
-      window.location.href = "/"
+      // replace, not push: a signed-in operator pressing Back should not land on the
+      // login form they just cleared.
+      router.replace("/")
     } catch (failure) {
       setError(describe(failure))
       setLoading(false)
