@@ -1,3 +1,7 @@
+# Layered on top of the main application.yml rather than replacing it: a test resource named
+# application.yml would shadow the real file, and every management, logging and health
+# setting in it would go untested. The `test` profile is activated for all tests by the
+# surefire configuration in pom.xml.
 spring:
   datasource:
     url: jdbc:h2:mem:zhiyuan;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH

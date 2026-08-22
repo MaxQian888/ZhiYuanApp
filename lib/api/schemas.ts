@@ -14,6 +14,35 @@ export const staffSchema = z.object({
   phone: z.string().regex(/^1[3-9]\d{9}$/),
 })
 export const staffAccountSchema = staffSchema.extend({ enabled: z.boolean() })
+/**
+ * A sign-in that either completed or stopped for a second factor.
+ *
+ * `accessToken` and `staff` are absent — not null — when `mfaRequired` is true: the server
+ * omits null fields, and a half-completed sign-in must not hand back anything that looks
+ * like a session.
+ */
+export const loginResultSchema = z.object({
+  accessToken: z.string().optional(),
+  refreshToken: z.string().nullish(),
+  staff: staffSchema.optional(),
+  mfaRequired: z.boolean().default(false),
+  mfaToken: z.string().optional(),
+})
+
+export const mfaStatusSchema = z.object({
+  enabled: z.boolean(),
+  /** A secret has been generated but never confirmed, so it guards nothing yet. */
+  pendingEnrolment: z.boolean(),
+  remainingRecoveryCodes: z.number().int().nonnegative(),
+})
+
+export const mfaEnrolmentSchema = z.object({
+  secret: z.string(),
+  provisioningUri: z.string(),
+})
+
+export const recoveryCodesSchema = z.object({ recoveryCodes: z.array(z.string()) })
+
 export const uavStatusSchema = z.enum(["ONLINE", "OFFLINE", "FLYING", "CHARGING"])
 export const uavSchema = z.object({
   id: z.number().int().positive(),
@@ -31,6 +60,22 @@ export const uavSchema = z.object({
   latitude: z.number(),
   longitude: z.number(),
   updatedAt: dateTime,
+})
+/**
+ * Whether the platform will currently accept a command for a device.
+ *
+ * `commandable` is the only field the UI branches on. `readiness` and `reason` exist so the
+ * operator is told *why* a control is unavailable — "device offline" and "telemetry stale"
+ * call for completely different responses, and a greyed-out button that explains nothing
+ * invites the operator to keep clicking it.
+ */
+export const readinessSchema = z.object({
+  uavCode: z.string(),
+  commandable: z.boolean(),
+  readiness: z.enum(["COMMANDABLE", "UNKNOWN_DEVICE", "OFFLINE", "STALE_TELEMETRY"]),
+  reason: z.string(),
+  online: z.boolean().optional(),
+  observedAt: z.string().optional(),
 })
 export const alertSchema = z.object({
   id: z.number().int().positive(),
@@ -98,9 +143,14 @@ export const goodsSchema = z.object({
   name: z.string(),
   category: z.enum(["food", "medicine", "life", "industry"]),
   price: z.number().nonnegative(),
+  // `stock` is AVAILABLE stock — what a new order may still claim. Unchanged meaning, on
+  // purpose: ADR 0004 forbids silently redefining a field an older client already reads.
   stock: z.number().int().nonnegative(),
   weight: z.number().nonnegative(),
   status: z.union([z.literal(0), z.literal(1)]),
+  // Additive (ADR 0001). Defaulted so a server that predates the migration still parses.
+  reservedStock: z.number().int().nonnegative().default(0),
+  onHandStock: z.number().int().nonnegative().optional(),
 })
 export const orderItemSchema = z.object({
   id: z.number().int().positive(),
@@ -121,6 +171,8 @@ export const orderSchema = z.object({
     .object({ receiverName: z.string(), receiverPhone: z.string(), detail: z.string() })
     .optional(),
   items: z.array(orderItemSchema),
+  // Optimistic-concurrency token. Additive; older servers omit it.
+  version: z.number().int().nonnegative().default(0),
 })
 export const taskSchema = z.object({
   id: z.number().int().positive(),

@@ -1,0 +1,4 @@
+# Registered here rather than as a @Bean so it runs before the datasource, Flyway and the
+# HTTP connector: a guard that trips after the application is already serving has failed.
+org.springframework.context.ApplicationListener=\
+com.zhiyuan.config.ProductionConfigGuard

@@ -280,19 +280,49 @@ export const seedUsers: ManagedUser[] = [
     addresses: [],
   },
 ]
+// `stock` is available; `reservedStock` is held by the three seeded in-flight orders
+// below, so the physical count of e.g. 应急药品包 is 41 + 1 = 42.
 export const seedGoods: Goods[] = [
-  { id: 1, name: "应急药品包", category: "medicine", price: 89, stock: 42, weight: 0.8, status: 1 },
-  { id: 2, name: "冷链餐食 A", category: "food", price: 42.5, stock: 18, weight: 1.2, status: 1 },
+  {
+    id: 1,
+    name: "应急药品包",
+    category: "medicine",
+    price: 89,
+    stock: 41,
+    weight: 0.8,
+    status: 1,
+    reservedStock: 1,
+  },
+  {
+    id: 2,
+    name: "冷链餐食 A",
+    category: "food",
+    price: 42.5,
+    stock: 16,
+    weight: 1.2,
+    status: 1,
+    reservedStock: 2,
+  },
   {
     id: 3,
     name: "工业检测仪",
     category: "industry",
     price: 1299,
-    stock: 5,
+    stock: 4,
     weight: 2.4,
     status: 1,
+    reservedStock: 1,
   },
-  { id: 4, name: "生活补给包", category: "life", price: 65, stock: 0, weight: 1.6, status: 0 },
+  {
+    id: 4,
+    name: "生活补给包",
+    category: "life",
+    price: 65,
+    stock: 0,
+    weight: 1.6,
+    status: 0,
+    reservedStock: 0,
+  },
 ]
 export const seedOrders: Order[] = [
   {

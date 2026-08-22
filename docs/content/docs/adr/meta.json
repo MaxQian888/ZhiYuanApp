@@ -1,0 +1,12 @@
+{
+  "title": "架构决策记录",
+  "pages": [
+    "0001-inventory-reservation",
+    "0002-mqtt-topology",
+    "0003-telemetry-retention",
+    "0004-api-v1-compatibility",
+    "0005-desktop-release",
+    "0006-client-architecture",
+    "0007-identity-and-observability"
+  ]
+}

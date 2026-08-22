@@ -22,7 +22,9 @@ const config: Config = {
   collectCoverageFrom: [
     "app/**/*.{js,jsx,ts,tsx}",
     "components/**/*.{js,jsx,ts,tsx}",
+    "hooks/**/*.{js,jsx,ts,tsx}",
     "lib/**/*.{js,jsx,ts,tsx}",
+    "stores/**/*.{js,jsx,ts,tsx}",
     "!**/*.d.ts",
     "!**/node_modules/**",
     "!**/.next/**",
@@ -46,6 +48,9 @@ const config: Config = {
 
   // Coverage thresholds - enforce minimum coverage in CI
   // Uncomment to enable strict coverage requirements
+  // Global floor stays where it was — ADR-era work may not lower it. Core business
+  // modules (the domain rules, the store that applies them, the API contract layer)
+  // carry a stricter per-module line gate because a regression there is silent.
   coverageThreshold: {
     global: {
       branches: 60,
@@ -53,6 +58,12 @@ const config: Config = {
       lines: 70,
       statements: 70,
     },
+    "lib/domain.ts": { lines: 90 },
+    "lib/sync-state.ts": { lines: 90 },
+    "lib/api/client.ts": { lines: 90 },
+    "lib/api/schemas.ts": { lines: 90 },
+    "lib/map/coordinates.ts": { lines: 90 },
+    "stores/product-store.ts": { lines: 90 },
   },
 
   // An object that configures minimum threshold enforcement for coverage results

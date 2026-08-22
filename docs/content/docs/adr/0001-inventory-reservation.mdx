@@ -1,0 +1,53 @@
+---
+title: 0001 · 库存预留模型
+description: goods.stock 表示可用库存，新增 reserved_stock 表示已占用未发出的库存。
+---
+
+# 0001 · 库存预留模型
+
+**状态：** 已接受 · **日期：** 2026-08-22
+
+## 背景
+
+当前 `goods.stock` 在下单时直接扣减（`PlatformDatabase.decrementStock`），没有任何记录说明"这批货已经被订单占住、但还没飞出去"。由此产生三个问题：
+
+1. **取消订单不还货。** 取消路径没有回补 `stock`，库存被永久吞掉。
+2. **失败任务无法重派。** 任务 `FAILED` 后货物既不在仓里也不属于任何订单。
+3. **对不上账。** 仓库实物数量与 `goods.stock` 必然不等，但系统里没有第二个数字来解释差额。
+
+同时并发下单只靠 `stock >= ?` 的条件更新防超卖，虽然单条 SQL 是原子的，却没有留下任何审计痕迹。
+
+## 决策
+
+引入**两列 + 一个流水表**：
+
+- `goods.stock` — **可用库存**，含义不变（下单可占用的数量）。这一点是刻意的：现有 API 与前端读到的 `stock` 语义不变，属于非破坏性演进。
+- `goods.reserved_stock` — **预留库存**，已被未完成订单占用、但实物仍在仓里。
+- `inventory_ledger` — 每次变化一行，记录 `goodsId`、`delta`、`reason`、`orderId`、`operatorId`、`idempotencyKey`。
+
+API v1 增加两个 **additive** 字段：`reservedStock` 与派生的 `onHandStock = stock + reservedStock`。
+
+状态迁移与库存副作用严格绑定：
+
+| 事件     | stock | reserved | 说明                       |
+| -------- | ----- | -------- | -------------------------- |
+| 创建订单 | `-n`  | `+n`     | 占用                       |
+| 取消订单 | `+n`  | `-n`     | 释放                       |
+| 任务到达 | —     | `-n`     | 核销，实物离仓             |
+| 任务失败 | —     | —        | **保留占用**，等待重新派单 |
+
+所有迁移在**单个数据库事务**内完成，配合 `orders.version` 乐观锁与 `idempotency_records` 表。
+
+## 考虑过的其他方案
+
+**A. 只用一列，下单不扣减、发货才扣。** 拒绝：并发下单会直接超卖，而超卖在配送场景里意味着无人机飞到现场才发现没货。
+
+**B. 单独的 `reservations` 表，不在 goods 上加列。** 拒绝：每次读商品列表都要 `GROUP BY` 聚合预留量，把最热的查询变成聚合查询；而 `reserved_stock` 是可以在同一事务里维护的冗余列，`inventory_ledger` 已经提供了可重算的事实来源。
+
+**C. 用 Redis 做预留。** 拒绝：预留必须与订单写入同事务。跨存储的两阶段提交是本方案要避免的复杂度，而这里的写入量（每天数千单）远未到 MySQL 的瓶颈。
+
+## 后果
+
+- 迁移分两步：先 `ALTER TABLE ... ADD COLUMN reserved_stock INT NOT NULL DEFAULT 0`（对旧代码无害），再切换写路径。符合 expand/contract，可在滚动发布中执行。
+- 历史订单的 `reserved_stock` 回填为 0 —— 对已完成订单这是正确值；对少量在途订单需要人工核对，迁移脚本会打印清单。
+- `goods` 的物理删除必须禁止（有 `inventory_ledger` 外键引用），改为停用。见 CONTEXT.md 第 3 节。

@@ -3,12 +3,7 @@ export type UavStatus = "ONLINE" | "OFFLINE" | "FLYING" | "CHARGING"
 export type CommandType = "TAKE_OFF" | "LAND" | "RETURN_HOME" | "STOP"
 export type CommandStatus = "QUEUED" | "SENT" | "ACKNOWLEDGED" | "FAILED" | "TIMEOUT"
 export type OrderStatus =
-  | "CREATED"
-  | "DISPATCHING"
-  | "DELIVERING"
-  | "FINISHED"
-  | "CANCELLED"
-  | "ERROR"
+  "CREATED" | "DISPATCHING" | "DELIVERING" | "FINISHED" | "CANCELLED" | "ERROR"
 export type TaskStatus = "WAITING" | "FLYING" | "ARRIVED" | "FAILED"
 export type AlertLevel = "HIGH" | "MID" | "LOW"
 export type AlertStatus = "OPEN" | "ACKNOWLEDGED" | "RESOLVED"
@@ -116,9 +111,19 @@ export interface Goods {
   name: string
   category: "food" | "medicine" | "life" | "industry"
   price: number
+  /** Available stock: what a new order may still claim. */
   stock: number
   weight: number
   status: 0 | 1
+  /** Held by orders that have not shipped yet. */
+  reservedStock: number
+  /** Physically in the warehouse. Derived server-side; see {@link onHandStock}. */
+  onHandStock?: number
+}
+
+/** The physical count, whether or not the server sent the derived field. */
+export function onHandStock(goods: Pick<Goods, "stock" | "reservedStock" | "onHandStock">): number {
+  return goods.onHandStock ?? goods.stock + goods.reservedStock
 }
 
 export interface OrderItem {
@@ -139,6 +144,8 @@ export interface Order {
   createdAt: string
   addressSnapshot?: { receiverName: string; receiverPhone: string; detail: string }
   items: OrderItem[]
+  /** Advances on every status change; a stale value loses the race server-side. */
+  version?: number
 }
 
 export interface UavTask {

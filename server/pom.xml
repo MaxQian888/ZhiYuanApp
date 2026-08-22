@@ -30,6 +30,19 @@
       <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <!--
+      OTLP rather than a Prometheus scrape endpoint: the platform runs several instances
+      behind a load balancer, and push semantics mean an instance's metrics survive it being
+      replaced between scrapes. Export stays off until an endpoint is configured.
+    -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-otlp</artifactId>
+    </dependency>
+    <dependency>
       <groupId>com.baomidou</groupId>
       <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
       <version>${mybatis-plus.version}</version>
@@ -51,6 +64,18 @@
       <groupId>com.auth0</groupId>
       <artifactId>java-jwt</artifactId>
       <version>4.5.0</version>
+    </dependency>
+    <!--
+      Eclipse Paho MQTT v5 client. Used directly rather than through Spring Integration
+      MQTT: the only thing we need from the broker is publish/subscribe with manual
+      acknowledgement, and Paho exposes that in three calls, whereas Spring Integration
+      would add its channel and message-flow machinery for no behaviour we use. See the
+      note in ADR 0002.
+    -->
+    <dependency>
+      <groupId>org.eclipse.paho</groupId>
+      <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+      <version>1.2.5</version>
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
@@ -90,6 +115,21 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <!--
+              Activates application-test.yml, which layers H2 and test secrets over the real
+              application.yml. It also tells ProductionConfigGuard that this is a development
+              environment; without it the guard would refuse to start the context, which is
+              exactly what it is supposed to do everywhere else.
+            -->
+            <spring.profiles.active>test</spring.profiles.active>
+          </systemPropertyVariables>
+        </configuration>
       </plugin>
     </plugins>
   </build>

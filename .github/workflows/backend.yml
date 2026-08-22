@@ -1,0 +1,182 @@
+name: Backend & Desktop Checks
+
+# ============================================================================
+# Java API, Rust desktop shell, and the documentation site
+# ============================================================================
+# These three used to sit outside the main pipeline, which meant a broken Rust
+# command or a docs build failure could reach master unnoticed. Slice 0 pulls
+# them in as first-class, blocking jobs.
+#
+# Needs no secrets.
+# ============================================================================
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  java:
+    name: Java API (Maven verify)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+
+      # The MQTT adapter is the one component that cannot be exercised without a broker,
+      # so the contract subclass runs here. Without MQTT_URL it skips — which is why it is
+      # started explicitly rather than left to chance.
+      - name: Start MQTT broker
+        run: docker compose up -d --wait mqtt
+
+      # Testcontainers-backed tests need a working Docker daemon; ubuntu-latest
+      # ships one. The MySQL container is started by the test itself.
+      - name: Maven verify
+        env:
+          MQTT_URL: tcp://localhost:1883
+        run: mvn -B -f server/pom.xml verify
+
+      - name: Confirm the MQTT contract actually ran
+        run: |
+          if ! grep -rlq "MqttUavAdapterTest" server/target/surefire-reports/; then
+            echo "::error::MqttUavAdapterTest did not run. The broker was unreachable and the"
+            echo "::error::contract silently skipped, which defeats the point of running it in CI."
+            exit 1
+          fi
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: docker compose logs --tail=200 mqtt
+
+      - name: Stop MQTT broker
+        if: always()
+        run: docker compose down -v
+
+      # Blocking, and it needs a key: since the NVD 2.0 API added rate limiting, an
+      # unauthenticated first sync takes hours rather than minutes. Rather than let
+      # the job hang or quietly skip, fail fast with an actionable message.
+      #
+      # SETUP: request a free key at https://nvd.nist.gov/developers/request-an-api-key
+      # and add it as the repository secret NVD_API_KEY.
+      - name: Verify NVD API key is configured
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::error::NVD_API_KEY is not set. The Maven dependency audit is a blocking gate"
+            echo "::error::and cannot run without it. Request a key at"
+            echo "::error::https://nvd.nist.gov/developers/request-an-api-key and add it as a"
+            echo "::error::repository secret named NVD_API_KEY."
+            exit 1
+          fi
+
+      - name: Maven dependency audit
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: >
+          mvn -B -f server/pom.xml
+          org.owasp:dependency-check-maven:12.1.0:check
+          -DfailBuildOnCVSS=7
+          -DnvdApiKey="$NVD_API_KEY"
+          -DskipProvidedScope=true
+          -DskipTestScope=true
+
+      - name: Upload dependency-check report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: java-dependency-check
+          path: server/target/dependency-check-report.html
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload surefire reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: java-test-reports
+          path: server/target/surefire-reports/
+          retention-days: 30
+
+  rust:
+    name: Desktop shell (fmt, clippy, test, audit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Blocking, same reasoning as the Node audit.
+      - name: Cargo dependency audit
+        run: cargo audit --file src-tauri/Cargo.lock --deny warnings
+
+  docs:
+    name: Documentation site
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.30.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.x
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Also generates docs/.source, which the docs tsconfig alias resolves to.
+      - name: Build docs
+        run: pnpm docs:build

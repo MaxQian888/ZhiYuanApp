@@ -3,8 +3,14 @@ name: Code Quality
 # ============================================================================
 # Code Quality & Security Checks
 # ============================================================================
-# Runs ESLint, TypeScript type checking, and security audits.
-# This workflow works OUT-OF-THE-BOX without requiring any secrets.
+# ESLint, Prettier, TypeScript and the Node dependency audit.
+#
+# Every step here is BLOCKING. Slice 0 of the production plan converted lint and
+# the dependency audits from advisory (`continue-on-error: true`) into gates —
+# an advisory gate is not a gate, and the whole point of the baseline is that a
+# regression cannot reach master.
+#
+# Needs no secrets.
 # ============================================================================
 
 on:
@@ -23,26 +29,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-
-      - name: Display CI/CD Configuration
-        shell: bash
-        run: |
-          echo "## 🔧 CI/CD Configuration" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Optional Features Status:" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "⚪ All optional integrations are **DISABLED** by default" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Optional features (currently disabled):" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Codecov integration" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Vercel deployments" >> "$GITHUB_STEP_SUMMARY"
-          echo "- macOS code signing" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Windows code signing" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "ℹ️ To enable optional features:" >> "$GITHUB_STEP_SUMMARY"
-          echo "1. Add the required secrets to your GitHub repository" >> "$GITHUB_STEP_SUMMARY"
-          echo "2. Uncomment the relevant sections in the workflow files" >> "$GITHUB_STEP_SUMMARY"
-          echo "3. See \`CI_CD.md\` for detailed setup instructions" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -63,7 +49,6 @@ jobs:
 
       - name: Run ESLint
         run: pnpm lint
-        continue-on-error: true
 
       - name: Check formatting (Prettier)
         run: pnpm format:check
@@ -71,9 +56,10 @@ jobs:
       - name: TypeScript type checking
         run: pnpm typecheck
 
-      - name: Security audit
+      # Blocking. If a new advisory lands, either update within range or record an
+      # explicit, reviewed exception — do not re-add continue-on-error.
+      - name: Node dependency audit
         run: pnpm audit --audit-level=moderate
-        continue-on-error: true
 
       - name: Check for outdated dependencies
         run: pnpm outdated

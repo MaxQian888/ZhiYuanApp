@@ -9,9 +9,14 @@ import {
   dashboardSchema,
   flightLogSchema,
   goodsSchema,
+  loginResultSchema,
+  mfaEnrolmentSchema,
+  mfaStatusSchema,
   orderSchema,
   pageSchema,
   podSchema,
+  readinessSchema,
+  recoveryCodesSchema,
   staffSchema,
   staffAccountSchema,
   taskSchema,
@@ -127,25 +132,61 @@ async function fetchAllPages<T>(path: string, schema: z.ZodType<T>): Promise<T[]
   return [first, ...remaining].flatMap((page) => page.items)
 }
 
+/** Either a signed-in operator, or the challenge that has to be answered first. */
+export type SignInOutcome =
+  | { kind: "signed-in"; staff: z.infer<typeof staffSchema> }
+  | { kind: "second-factor"; mfaToken: string }
+
+async function completeSignIn(value: z.infer<typeof loginResultSchema>): Promise<SignInOutcome> {
+  if (value.mfaRequired || !value.accessToken || !value.staff) {
+    if (!value.mfaToken)
+      throw new ApiError(500, "The server asked for a second factor but sent no challenge")
+    // Nothing is stored yet. Until the code is verified this browser holds no session, which
+    // is the entire point of the second step.
+    return { kind: "second-factor", mfaToken: value.mfaToken }
+  }
+  setAccessToken(value.accessToken)
+  if (value.refreshToken) await saveRefreshToken(value.refreshToken)
+  resumeSessionRecovery()
+  return { kind: "signed-in", staff: value.staff }
+}
+
 export const api = {
-  login: async (username: string, password: string) => {
-    const value = await apiRequest(
-      "/api/v1/auth/login",
-      z.object({
-        accessToken: z.string(),
-        refreshToken: z.string().nullish(),
-        staff: staffSchema,
-      }),
-      {
+  login: async (username: string, password: string): Promise<SignInOutcome> =>
+    completeSignIn(
+      await apiRequest("/api/v1/auth/login", loginResultSchema, {
         method: "POST",
         body: JSON.stringify({ username, password, client: isTauri() ? "tauri" : "web" }),
-      }
-    )
-    setAccessToken(value.accessToken)
-    if (value.refreshToken) await saveRefreshToken(value.refreshToken)
-    resumeSessionRecovery()
-    return value.staff
-  },
+      })
+    ),
+
+  /** Answers a second-factor challenge with a TOTP code or a recovery code. */
+  verifyMfa: async (mfaToken: string, code: string): Promise<SignInOutcome> =>
+    completeSignIn(
+      await apiRequest("/api/v1/auth/mfa/verify", loginResultSchema, {
+        method: "POST",
+        body: JSON.stringify({ mfaToken, code, client: isTauri() ? "tauri" : "web" }),
+      })
+    ),
+
+  mfaStatus: () => apiRequest("/api/v1/auth/mfa", mfaStatusSchema),
+  beginMfaEnrolment: () =>
+    apiRequest("/api/v1/auth/mfa/setup", mfaEnrolmentSchema, { method: "POST" }),
+  confirmMfaEnrolment: (code: string) =>
+    apiRequest("/api/v1/auth/mfa/confirm", recoveryCodesSchema, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  regenerateRecoveryCodes: (code: string) =>
+    apiRequest("/api/v1/auth/mfa/recovery", recoveryCodesSchema, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  disableMfa: (code: string) =>
+    apiRequest("/api/v1/auth/mfa", z.null(), {
+      method: "DELETE",
+      body: JSON.stringify({ code }),
+    }),
   me: () => apiRequest("/api/v1/auth/me", staffSchema),
   staffAccounts: () => apiRequest("/api/v1/admins", z.array(staffAccountSchema)),
   createStaffAccount: (account: {
@@ -211,6 +252,7 @@ export const api = {
       z.object({ commandId: z.string(), status: z.literal("QUEUED"), adapter: z.string() }),
       { method: "POST", body: JSON.stringify(body) }
     ),
+  readiness: (id: number) => apiRequest(`/api/v1/uavs/${id}/readiness`, readinessSchema),
   commands: () => apiRequest("/api/v1/uavs/commands", z.array(commandSchema)),
   flightLogs: (id: number) =>
     apiRequest(`/api/v1/uavs/${id}/flight-logs`, z.array(flightLogSchema)),
@@ -297,10 +339,21 @@ export const api = {
     apiRequest(`/api/v1/goods/${id}/status`, goodsSchema, { method: "PATCH" }),
   orders: () => apiRequest("/api/v1/orders", pageSchema(orderSchema)),
   allOrders: () => fetchAllPages("/api/v1/orders", orderSchema),
-  createOrder: (userId: number, addressId: number, items: { goodsId: number; count: number }[]) =>
+  /**
+   * Creates an order. `idempotencyKey` is optional on the wire for older clients, but new
+   * ones must send it — a retried POST then returns the original order rather than a
+   * second one. See ADR 0004.
+   */
+  createOrder: (
+    userId: number,
+    addressId: number,
+    items: { goodsId: number; count: number }[],
+    idempotencyKey?: string
+  ) =>
     apiRequest("/api/v1/orders", orderSchema, {
       method: "POST",
       body: JSON.stringify({ userId, addressId, items }),
+      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
     }),
   dispatchOrder: (orderId: number, uavId: number) =>
     apiRequest(`/api/v1/orders/${orderId}/dispatch`, taskSchema, {
@@ -360,20 +413,25 @@ export const api = {
     ),
 }
 
-export type SseEvent = { event: string; data: unknown }
+export type SseEvent = { event: string; data: unknown; id?: string }
+
 export function parseSseChunk(chunk: string): { events: SseEvent[]; remainder: string } {
   const frames = chunk.split("\n\n")
   const remainder = frames.pop() ?? ""
   const events = frames.flatMap((frame) => {
     let event = "message"
+    let id: string | undefined
     const data: string[] = []
     for (const line of frame.split("\n")) {
       if (line.startsWith("event:")) event = line.slice(6).trim()
+      // The server numbers every event so a reconnect can resume from the gap rather
+      // than refetching the whole fleet.
+      if (line.startsWith("id:")) id = line.slice(3).trim()
       if (line.startsWith("data:")) data.push(line.slice(5).trim())
     }
     if (!data.length) return []
     try {
-      return [{ event, data: JSON.parse(data.join("\n")) }]
+      return [{ event, id, data: JSON.parse(data.join("\n")) }]
     } catch {
       return []
     }
@@ -387,23 +445,26 @@ export async function streamTelemetry(
   signal: AbortSignal
 ) {
   let delay = 500
+  // Remembered across reconnects so the server can replay only what we missed. When it
+  // cannot — the gap is older than its buffer — it sends a full snapshot instead, so a
+  // long disconnection still ends with a correct client.
+  let lastEventId: string | undefined
+
+  const open = async () => {
+    const headers = new Headers({ Accept: "text/event-stream" })
+    if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
+    if (lastEventId) headers.set("Last-Event-ID", lastEventId)
+    return fetch(`${API_URL}/api/v1/uavs/telemetry/stream`, {
+      headers,
+      signal,
+      credentials: "include",
+    })
+  }
+
   while (!signal.aborted) {
     try {
-      const headers = new Headers({ Accept: "text/event-stream" })
-      if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
-      let response = await fetch(`${API_URL}/api/v1/uavs/telemetry/stream`, {
-        headers,
-        signal,
-        credentials: "include",
-      })
-      if (response.status === 401 && (await refreshAccessToken())) {
-        if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
-        response = await fetch(`${API_URL}/api/v1/uavs/telemetry/stream`, {
-          headers,
-          signal,
-          credentials: "include",
-        })
-      }
+      let response = await open()
+      if (response.status === 401 && (await refreshAccessToken())) response = await open()
       if (!response.ok || !response.body) throw new ApiError(response.status, response.statusText)
       onState("live")
       delay = 500
@@ -416,7 +477,10 @@ export async function streamTelemetry(
         buffer += decoder.decode(value, { stream: true })
         const parsed = parseSseChunk(buffer)
         buffer = parsed.remainder
-        parsed.events.forEach(onEvent)
+        for (const event of parsed.events) {
+          if (event.id) lastEventId = event.id
+          onEvent(event)
+        }
       }
     } catch {
       if (signal.aborted) break

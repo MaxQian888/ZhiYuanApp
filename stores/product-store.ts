@@ -34,11 +34,61 @@ import {
 } from "@/lib/mock-data"
 
 export type Locale = "zh-CN" | "en"
+
+/**
+ * The three stock movements defined in CONTEXT.md §3, applied to one product row.
+ * Available and reserved always move together so the physical count stays honest.
+ */
+function reserveLine(goods: Goods, items: { goodsId: number; count: number }[]): Goods {
+  const line = items.find((item) => item.goodsId === goods.id)
+  if (!line) return goods
+  return {
+    ...goods,
+    stock: goods.stock - line.count,
+    reservedStock: goods.reservedStock + line.count,
+  }
+}
+
+function releaseLine(goods: Goods, order: Order | undefined): Goods {
+  const line = order?.items.find((item) => item.goodsId === goods.id)
+  if (!line) return goods
+  return {
+    ...goods,
+    stock: goods.stock + line.count,
+    reservedStock: Math.max(0, goods.reservedStock - line.count),
+  }
+}
+
+function consumeLine(goods: Goods, order: Order | undefined): Goods {
+  const line = order?.items.find((item) => item.goodsId === goods.id)
+  if (!line) return goods
+  return { ...goods, reservedStock: Math.max(0, goods.reservedStock - line.count) }
+}
+
+/**
+ * A per-attempt key so a retried create returns the first result instead of duplicating
+ * the order. `crypto.randomUUID` is unavailable in some embedded webviews, hence the
+ * fallback.
+ */
+function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
 const remoteMode = isRemoteApi
 interface ProductState {
   locale: Locale
   staff: Staff | null
   authenticated: boolean
+  /**
+   * True while a stored refresh token is being exchanged for a session on first load.
+   *
+   * Distinct from `authenticated: false`, which means *known* to be signed out. Collapsing
+   * the two is what makes the login form flash for a moment on every reload before the
+   * restored session replaces it — the app was not signed out, it just did not know yet.
+   */
+  sessionRecoveryPending: boolean
   realtimeState: "live" | "reconnecting" | "offline"
   dataSyncPending: boolean
   dataSyncErrors: string[]
@@ -77,7 +127,10 @@ interface ProductState {
   ) => Promise<void>
   deleteAddress: (userId: number, addressId: number) => Promise<void>
   setDefaultAddress: (userId: number, addressId: number) => Promise<void>
-  saveGoods: (goods: Omit<Goods, "id"> & { id?: number }) => Promise<void>
+  /** Reserved stock is never edited directly — it only moves with the order lifecycle. */
+  saveGoods: (
+    goods: Omit<Goods, "id" | "reservedStock" | "onHandStock"> & { id?: number }
+  ) => Promise<void>
   deleteGoods: (ids: number[]) => Promise<void>
   toggleGoods: (id: number) => Promise<void>
   transitionOrder: (id: number, status: OrderStatus) => Promise<boolean>
@@ -98,6 +151,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
   locale: "zh-CN",
   staff: remoteMode ? null : demoStaff,
   authenticated: !remoteMode,
+  sessionRecoveryPending: remoteMode,
   realtimeState: remoteMode ? "offline" : "live",
   dataSyncPending: remoteMode,
   dataSyncErrors: [],
@@ -124,6 +178,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
     set({
       authenticated: false,
       staff: null,
+      sessionRecoveryPending: false,
       ...(remoteMode
         ? {
             realtimeState: "offline" as const,
@@ -386,12 +441,17 @@ export const useProductStore = create<ProductState>((set, get) => ({
     set((state) =>
       goods.id
         ? {
+            // Spreading the edit over the existing row keeps whatever orders have reserved.
             goods: state.goods.map((item) => (item.id === goods.id ? { ...item, ...goods } : item)),
           }
         : {
             goods: [
               ...state.goods,
-              { ...goods, id: Math.max(0, ...state.goods.map((item) => item.id)) + 1 },
+              {
+                ...goods,
+                id: Math.max(0, ...state.goods.map((item) => item.id)) + 1,
+                reservedStock: 0,
+              },
             ],
           }
     )
@@ -415,6 +475,11 @@ export const useProductStore = create<ProductState>((set, get) => ({
     if (remoteMode && !saved) return false
     set((state) => ({
       orders: state.orders.map((item) => (item.id === id ? (saved ?? { ...item, status }) : item)),
+      // Cancelling gives the claim back; every other transition leaves stock where it is.
+      goods:
+        status === "CANCELLED"
+          ? state.goods.map((goods) => releaseLine(goods, current))
+          : state.goods,
       tasks:
         status === "CANCELLED"
           ? state.tasks.map((task) =>
@@ -428,13 +493,11 @@ export const useProductStore = create<ProductState>((set, get) => ({
   },
   createOrder: async (userId, addressId, items) => {
     if (remoteMode) {
-      const order = await api.createOrder(userId, addressId, items)
+      // The key makes a retried POST return the original order instead of a second one.
+      const order = await api.createOrder(userId, addressId, items, newIdempotencyKey())
       set((state) => ({
         orders: [order, ...state.orders],
-        goods: state.goods.map((goods) => {
-          const line = items.find((item) => item.goodsId === goods.id)
-          return line ? { ...goods, stock: goods.stock - line.count } : goods
-        }),
+        goods: state.goods.map((goods) => reserveLine(goods, items)),
       }))
       return
     }
@@ -470,10 +533,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
     }
     set((state) => ({
       orders: [order, ...state.orders],
-      goods: state.goods.map((goods) => {
-        const line = items.find((item) => item.goodsId === goods.id)
-        return line ? { ...goods, stock: goods.stock - line.count } : goods
-      }),
+      goods: state.goods.map((goods) => reserveLine(goods, items)),
     }))
   },
   dispatchOrder: async (orderId, uavId) => {
@@ -524,6 +584,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
       return true
     }
     const now = new Date().toISOString()
+    const order = get().orders.find((item) => item.id === task.orderId)
     set((state) => ({
       tasks: state.tasks.map((item) =>
         item.id === id
@@ -536,6 +597,19 @@ export const useProductStore = create<ProductState>((set, get) => ({
             }
           : item
       ),
+      orders: state.orders.map((item) =>
+        item.id === task.orderId
+          ? {
+              ...item,
+              status:
+                status === "FLYING" ? "DELIVERING" : status === "ARRIVED" ? "FINISHED" : "ERROR",
+            }
+          : item
+      ),
+      // Arrival redeems the reservation: the goods have physically left the warehouse.
+      // A failure deliberately keeps it so the order can be re-dispatched.
+      goods:
+        status === "ARRIVED" ? state.goods.map((goods) => consumeLine(goods, order)) : state.goods,
     }))
     return true
   },

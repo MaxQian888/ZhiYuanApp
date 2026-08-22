@@ -9,6 +9,10 @@ public class AdminEntity {
     private String phone;
     private Boolean enabled;
     private Long tokenVersion;
+    private String mfaSecret;
+    private Boolean mfaEnabled;
+    /** The last TOTP time step accepted for this account; the replay guard. */
+    private Long mfaLastStep;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -26,4 +30,15 @@ public class AdminEntity {
     public void setEnabled(Boolean enabled) { this.enabled = enabled; }
     public Long getTokenVersion() { return tokenVersion; }
     public void setTokenVersion(Long tokenVersion) { this.tokenVersion = tokenVersion; }
+    public String getMfaSecret() { return mfaSecret; }
+    public void setMfaSecret(String mfaSecret) { this.mfaSecret = mfaSecret; }
+    public Boolean getMfaEnabled() { return mfaEnabled; }
+    public void setMfaEnabled(Boolean mfaEnabled) { this.mfaEnabled = mfaEnabled; }
+    public Long getMfaLastStep() { return mfaLastStep; }
+    public void setMfaLastStep(Long mfaLastStep) { this.mfaLastStep = mfaLastStep; }
+
+    /** Whether this account must present a second factor to sign in. */
+    public boolean mfaRequired() {
+        return Boolean.TRUE.equals(mfaEnabled) && mfaSecret != null && !mfaSecret.isBlank();
+    }
 }

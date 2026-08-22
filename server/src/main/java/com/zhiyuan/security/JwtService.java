@@ -13,6 +13,10 @@ import java.util.UUID;
 
 @Service
 public class JwtService {
+    /** Token type for a half-completed sign-in: password accepted, second factor pending. */
+    public static final String MFA_CHALLENGE = "mfa-challenge";
+    private static final long MFA_CHALLENGE_MINUTES = 5;
+
     private final Algorithm algorithm;
     private final long accessMinutes;
     private final long refreshDays;
@@ -31,6 +35,18 @@ public class JwtService {
 
     public String refreshToken(AdminEntity admin) {
         return token(admin, "refresh", Instant.now().plus(refreshDays, ChronoUnit.DAYS));
+    }
+
+    /**
+     * The token handed out when a password is correct but a second factor is still owed.
+     *
+     * <p>Its own type, so it cannot be presented anywhere an access token is expected — the
+     * whole point is that the holder is not authenticated yet. Five minutes is long enough
+     * to find a phone and short enough that an intercepted challenge is worthless by the
+     * time anyone could use it.
+     */
+    public String mfaChallengeToken(AdminEntity admin) {
+        return token(admin, MFA_CHALLENGE, Instant.now().plus(MFA_CHALLENGE_MINUTES, ChronoUnit.MINUTES));
     }
 
     private String token(AdminEntity admin, String type, Instant expiresAt) {

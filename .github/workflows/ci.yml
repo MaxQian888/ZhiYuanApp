@@ -7,8 +7,10 @@ name: CI/CD Pipeline
 # Each workflow can also be run independently for better maintainability.
 #
 # Workflow Structure:
-# ├── quality.yml     - Code quality & security checks (ESLint, TypeScript, audit)
-# ├── test.yml        - Test suite with coverage & Next.js build
+# ├── quality.yml     - Lint, format, types, Node dependency audit (all blocking)
+# ├── test.yml        - Jest with coverage gates & Next.js build
+# ├── backend.yml     - Java API, Rust desktop shell, docs site (all blocking)
+# ├── integration.yml - Playwright: simulator, and remote against real services
 # ├── build-tauri.yml - Tauri desktop app builds (Windows, macOS, Linux)
 # ├── deploy.yml      - Deployment workflows (optional, disabled by default)
 # └── release.yml     - GitHub release creation (triggered by version tags)
@@ -39,18 +41,28 @@ permissions:
   checks: write
 
 jobs:
-  # Step 1: Code Quality Checks
+  # Step 1: fast, parallel gates — nothing here needs infrastructure.
   quality:
     name: Quality
     uses: ./.github/workflows/quality.yml
 
-  # Step 2: Test Suite & Build
   test:
     name: Test
     uses: ./.github/workflows/test.yml
 
-  # Step 3: Build Tauri Desktop Apps (after quality & test pass)
+  backend:
+    name: Backend & Desktop
+    uses: ./.github/workflows/backend.yml
+
+  # Step 2: integration against real services. Runs only once the cheap gates are
+  # green, so a lint error never burns a container-backed job.
+  integration:
+    name: Integration
+    needs: [quality, test]
+    uses: ./.github/workflows/integration.yml
+
+  # Step 3: desktop bundles, once everything else has passed.
   build-tauri:
     name: Build Tauri
-    needs: [quality, test]
+    needs: [quality, test, backend, integration]
     uses: ./.github/workflows/build-tauri.yml

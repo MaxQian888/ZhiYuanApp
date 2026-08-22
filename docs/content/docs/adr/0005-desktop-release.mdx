@@ -1,0 +1,68 @@
+---
+title: 0005 · 桌面发布与签名
+description: 单一版本源；Windows 用 Azure Trusted Signing，macOS 用 Developer ID + 公证；updater 签名不可关闭，分三个 channel 灰度。
+---
+
+# 0005 · 桌面发布与签名
+
+**状态：** 已接受 · **日期：** 2026-08-22
+
+## 背景
+
+桌面端现状有三个阻断上线的问题：
+
+1. **版本号有四处独立来源** —— `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、后端 `zhiyuan.version`，靠人手同步。
+2. **构建完全未签名**（`build-tauri.yml` 里签名 env 是注释掉的）。未签名的 Windows 安装包会触发 SmartScreen，macOS 会被 Gatekeeper 直接拒绝。
+3. **updater 关闭**（`plugins.updater.active = false`，`pubkey` 为空）。没有分发升级的手段，一旦发出去就收不回来。
+
+## 决策
+
+### 单一版本源
+
+`package.json` 的 `version` 是唯一事实来源。构建前由一个脚本把它同步到 Cargo、Tauri 配置、后端与界面展示，版本不一致时**构建失败**而不是自动修正 —— 自动修正会掩盖"有人改错了地方"这件事。
+
+### 签名
+
+| 平台    | 方案                                       | 产物                     |
+| ------- | ------------------------------------------ | ------------------------ |
+| Windows | **Azure Trusted Signing**                  | 已签名 MSI / NSIS        |
+| macOS   | **Developer ID** + notarization + stapling | 已签名并公证的 DMG/.app  |
+| Linux   | **不签名**，仅保留测试构建                 | AppImage / deb（测试用） |
+
+Windows 选 Azure Trusted Signing 而非传统 EV 证书：私钥留在 HSM 里，不会以 `.pfx` 的形式出现在 CI 的 secret 中，也就不存在"CI 被攻破 = 签名密钥泄露"这条路径。
+
+Linux 不签名是范围决策，不是技术决策 —— 目标客户全部使用 Windows 与 macOS。Linux 构建保留下来是为了在 CI 里持续验证跨平台编译没有坏掉。
+
+### Updater
+
+- `plugins.updater.active = true`，HTTPS endpoint，**签名校验不可关闭**。
+- 签名私钥存放在受保护的 GitHub release 环境（required reviewers），并另有离线备份 + 双人恢复流程。
+- 三个 manifest channel：
+
+```
+internal  →  每次 master 构建，团队内部
+pilot     →  人工提升，小范围真实用户
+stable    →  pilot 验证通过后才提升
+```
+
+**stable 永远不直接从 CI 产出。** 提升是一个显式的人工动作。
+
+### CSP
+
+生产 CSP 使用精确 allowlist（高德脚本域、瓦片域、生产 API 域），**不使用通配符**。每加一个域名都要先实际验证它确实被用到。
+
+## 考虑过的其他方案
+
+**A. 用 `.pfx` 证书 + GitHub secret 签 Windows。** 可行且更便宜，但把长期有效的签名私钥放进 CI secret 是一个我们不愿意接受的爆炸半径。
+
+**B. 不做 updater，让用户手动下载。** 拒绝：安全补丁的送达时间会变成"用户什么时候想起来"，与 99.9% 可用性目标和事故响应要求冲突。
+
+**C. 只有 stable 一个 channel。** 拒绝：没有灰度手段的话，一个坏版本会同时打到所有 100 名操作员。
+
+**D. 版本号不一致时自动修正。** 拒绝：见上，掩盖问题。
+
+## 后果
+
+- 需要 Azure Trusted Signing 账户与 Apple Developer Program 会员资格，两者都有采购前置时间。在此之前 CI 产出的仍是未签名构建，并且**必须在产物名里标出 `unsigned`**，避免误发。
+- updater 私钥丢失意味着**所有已安装客户端再也收不到更新**（公钥编译在客户端里）。因此离线备份与双人恢复流程是硬要求，写进季度演练清单。
+- 三 channel 意味着 release 流程多一个人工步骤，需要在运维手册里明确谁有权提升 stable。

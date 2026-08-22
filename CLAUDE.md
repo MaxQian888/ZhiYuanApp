@@ -23,13 +23,17 @@ pnpm format           # Format with Prettier
 pnpm format:check     # Check formatting without writing
 pnpm typecheck        # TypeScript --noEmit
 
+# Backend (Spring, port 8080) — the profile is required, see below
+SPRING_PROFILES_ACTIVE=development mvn -f server/pom.xml spring-boot:run
+
 # Testing
 pnpm test             # Run Jest tests
 pnpm test:watch       # Run tests in watch mode
 pnpm test:coverage    # Run tests with coverage report
 
 # Desktop (Tauri)
-pnpm tauri dev        # Dev mode with hot reload
+pnpm tauri:dev        # Dev mode with hot reload (loads the dev CSP overlay)
+pnpm tauri dev        # Dev mode with the shipped strict CSP (localhost is blocked)
 pnpm tauri build      # Build desktop installer
 pnpm tauri info       # Check Tauri environment
 
@@ -57,7 +61,11 @@ Root `pnpm-lock.yaml` is the single lockfile for all packages. Run `pnpm install
 
 ### Frontend Structure (main app)
 
-- `app/` - Next.js App Router (layout.tsx, page.tsx, globals.css)
+- `app/` - Next.js App Router (layout.tsx, page.tsx, globals.css, error.tsx, not-found.tsx)
+- `components/product/views/` - One route module per domain; `product-page.tsx` only maps a
+  route to a view. Shared loading/error/toast helpers live in `components/product/view-kit.tsx`
+- `lib/map/` - `MapProvider` port. **The only place WGS-84 becomes GCJ-02** — see ADR 0006
+- `lib/voice/` - `AsrAdapter` port (browser Web Speech, Volcengine streaming, unavailable)
 - `components/ui/` - All 57 shadcn/ui components pre-installed (**no test files here**)
 - `hooks/` - Shared hooks (e.g., `use-mobile.ts`)
 - `lib/utils.ts` - `cn()` utility (clsx + tailwind-merge)
@@ -135,3 +143,13 @@ if (isTauri()) {
 - **Rust toolchain**: Requires v1.77.2+ for Tauri builds
 - **Docs `.source/` is generated**: run `pnpm docs:dev` or `pnpm docs:build` once before TypeScript resolves `collections/server`
 - shadcn/ui configured with "new-york" style and RSC mode
+- **Coordinates are WGS-84 everywhere** except inside `lib/map/amap-provider.ts`. Importing
+  `lib/map/coordinates.ts` from anywhere else breaks that boundary — go through `MapProvider`
+- **Tauri CSP is an exact allowlist** with no localhost origins; see `src-tauri/README-csp.md`
+- **The Spring profile is load-bearing.** Any profile that is not `development`/`dev`/`test`
+  is treated as production, and `ProductionConfigGuard` refuses to start on development
+  defaults (dev JWT secret, empty DB password, localhost CORS, simulator enabled). Run the
+  server locally with `SPRING_PROFILES_ACTIVE=development`; tests get `test` from surefire
+- **`server/src/test/resources/application-test.yml` layers over the main config.** Do not
+  add an `application.yml` to test resources — it would shadow the real one and every
+  management, logging and health setting would go untested

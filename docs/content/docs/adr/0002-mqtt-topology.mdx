@@ -1,0 +1,97 @@
+---
+title: 0002 · MQTT 设备链路拓扑
+description: MQTT 5 + QoS 1 + mTLS，topic 以 uavCode 分片，多实例用共享订阅消费。
+---
+
+# 0002 · MQTT 设备链路拓扑
+
+**状态：** 已接受 · **日期：** 2026-08-22 · **修订：** 2026-08-22（客户端选型）
+
+## 背景
+
+现有 `SimulatorUavAdapter` 在进程内伪造设备行为，足以演示界面，但不构成设备链路。生产目标是 50–500 架无人机、飞行态 5Hz 遥测，即峰值约 2,500 msg/s，并且后端要多实例运行以满足 99.9% 可用性。
+
+需要决定：协议版本、topic 结构、QoS、认证方式、多实例如何分摊消费。
+
+## 决策
+
+### 协议与客户端
+
+MQTT 5，启用 **manual ACK**、自动重连，client ID 按实例唯一。
+
+选 v5 而非 3.1.1 是为了拿到会话过期、原因码和用户属性 —— 用户属性让我们把 `traceId` 和 `commandId` 放进消息头而不是塞进 payload。
+
+**修订（实现时）：** 原计划使用 Spring Integration 的 MQTT v5 adapter，实际改为**直接使用 Eclipse Paho MQTTv5 客户端**。
+
+理由：我们对 broker 的全部需求就是 publish / subscribe / manual ack 三件事，Paho 用三个方法就能表达（`setManualAcks(true)`、`messageArrivedComplete(...)`、`subscribe(...)`）。Spring Integration 会额外引入 channel 与 message flow 这一整套概念，而我们不会使用其中任何一项 —— 多出来的抽象只会让"消息什么时候被确认"这个关键问题更难读。
+
+代价是我们自己写 callback 与重连配置，约 60 行；这部分由 `UavAdapterContract` 覆盖，MQTT 子类在 CI 的 EMQX 容器上运行。
+
+### 消息编解码
+
+设备 wire format 由 `DeviceJson` **显式固定**，不继承应用的 Jackson 配置：`Instant` 一律 ISO-8601 UTC，未知字段忽略。
+
+固件的发布节奏与平台不同，不能因为平台升级了一个库、改变了时间戳的写法就要求固件重新发版。忽略未知字段是为了前向兼容 —— 真正不兼容的变更由 `schemaVersion` 把关。
+
+### Topic
+
+```
+zhiyuan/v1/uavs/{uavCode}/telemetry       设备 → 平台   QoS 1
+zhiyuan/v1/uavs/{uavCode}/presence        设备 → 平台   QoS 1, retained, LWT
+zhiyuan/v1/uavs/{uavCode}/command-acks    设备 → 平台   QoS 1
+zhiyuan/v1/uavs/{uavCode}/commands        平台 → 设备   QoS 1
+zhiyuan/v1/platform/events/{eventType}    平台 → 平台   QoS 1
+```
+
+`v1` 段是**协议版本**，与 API v1 独立演进。用 `uavCode` 而非数据库 `id` 分片：设备固件不应该知道我们的主键。
+
+### QoS 与投递语义
+
+全部 QoS 1（至少一次）。**不使用 QoS 2** —— 它的四次握手把吞吐砍掉一半，而幂等性我们本来就必须自己保证（设备重启、平台重放都会产生重复）。
+
+去重靠消息里的 `eventId` + `sequence`，业务侧幂等。
+
+### 消息信封
+
+每条消息都带 `schemaVersion`、`eventId`、`uavCode`、`sequence`、`observedAt`。坐标 WGS-84，时间 UTC，`sequence` 设备侧单调递增。
+
+字段缺失或 `schemaVersion` 不认识 → 计入 `mqtt.invalid.messages` 指标并 ACK 丢弃，**不重试** —— 格式错的消息重投一万次还是错的。
+
+### 认证与授权
+
+设备用 **mTLS**，证书 CN 即 `uavCode`。broker ACL 只允许每台设备读写自己那五个 topic。这样一台被攻破的设备无法监听或伪造其他设备。
+
+### 多实例
+
+原始设备流用 **共享订阅** `$share/zhiyuan-ingest/zhiyuan/v1/uavs/+/telemetry` 消费，每条消息只有一个实例处理。
+
+处理流程：
+
+```
+收到消息
+  └─ MySQL 事务：写当前快照 + 写 outbox
+  └─ ClickHouse：批量写原始遥测
+  └─ 两者都成功 → manual ACK
+```
+
+outbox 再发布规范化平台事件到 `zhiyuan/v1/platform/events/{eventType}`，这一条用**普通订阅**（不是共享），所有实例都收到，各自扇出给自己的 SSE 客户端。
+
+### 指令闸门
+
+只有设备 presence 在线**且**遥测新鲜（飞行态 ≤2s，地面态 ≤5s）才允许下发。离线或过期直接拒绝，**不排队** —— 一条延迟五分钟才送达的"返航"指令比拒绝更危险。
+
+指令带 `commandId`、`expiresAt`、幂等键；8 秒内没有最终 ACK 转 `TIMEOUT`。
+
+## 考虑过的其他方案
+
+**A. 直接用 WebSocket，不引入 MQTT。** 拒绝：需要自己实现重连、QoS、遗嘱消息、per-device ACL，等于重写一个 broker。
+
+**B. 用 Kafka 做设备接入。** 拒绝：Kafka 客户端对嵌入式设备太重，且没有 LWT 这类连接语义。Kafka 适合做平台内部总线，但那正是 outbox + MQTT platform events 覆盖的场景，引入第三个中间件不划算。
+
+**C. 每个实例都消费全量遥测（不用共享订阅）。** 拒绝：2,500 msg/s × N 实例的重复解析和重复写库，扩容反而变慢。
+
+## 后果
+
+- 需要一个支持 MQTT 5、共享订阅和 mTLS 的 broker（EMQX、HiveMQ、VerneMQ 均可）。CI 用容器化 broker 跑契约测试。
+- 设备固件需要按上述信封改造。过渡期 simulator adapter 与 MQTT adapter 通过**同一套契约测试**，在 staging 对照运行，但**不双发真实指令**。
+- 证书生命周期管理（签发、轮换、吊销）成为新的运维职责，见 Slice 4 的灾备演练清单。

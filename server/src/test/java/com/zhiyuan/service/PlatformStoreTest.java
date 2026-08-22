@@ -1,7 +1,7 @@
 package com.zhiyuan.service;
 
+import com.zhiyuan.fulfilment.FulfilmentConflictException;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.server.ResponseStatusException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -22,7 +22,7 @@ class PlatformStoreTest {
     @Test
     void rejectsIllegalTaskTransitions() {
         assertThatThrownBy(() -> store.transitionTask(1, "ARRIVED"))
-            .isInstanceOf(ResponseStatusException.class)
+            .isInstanceOf(FulfilmentConflictException.class)
             .hasMessageContaining("Illegal task transition");
     }
 

@@ -56,3 +56,6 @@ next-env.d.ts
 # docs workspace
 /docs/.next/
 /docs/.source/
+
+# Tauri Stronghold vault (local runtime credential store)
+*.hold

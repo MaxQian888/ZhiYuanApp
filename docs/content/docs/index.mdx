@@ -24,7 +24,63 @@ cd .. && NEXT_PUBLIC_API_MODE=remote pnpm dev
 
 API 使用 `{ code, message, data, traceId }` 信封，分页使用 `{ items, page, size, total, totalPages }`。入口包括 `/api/v1/auth`、`admins`、`dashboard`、`search`、`uavs`、`alerts`、`logs`、`pods`、`device-bindings`、`users`、`goods`、`orders`、`tasks` 与 `system`。`/api/v1/logs` 在数据库侧过滤并分页飞行、控制和语音审计记录；告警按 `OPEN → ACKNOWLEDGED → RESOLVED` 流转并记录处理员工与时间。仅 `admin` 可创建、编辑、停用和重新启用员工账号；停用或重置密码会立即撤销该员工的活动会话。
 
-指令接口返回 HTTP 202 与 `commandId`。状态为 `QUEUED → SENT → ACKNOWLEDGED`，失败为 `FAILED` 或 `TIMEOUT`。`/api/v1/uavs/telemetry/stream` 使用 SSE，事件名固定为 `telemetry` 与 `heartbeat`；客户端断线后指数退避重连并重新获取快照。
+## 设备链路与指令
+
+设备通过 MQTT 5 接入（[ADR 0002](/docs/adr/0002-mqtt-topology)）。每条消息都带 `schemaVersion`、`eventId`、`uavCode`、`sequence`、`observedAt`；坐标 WGS-84，时间 UTC。
+
+**指令闸门。** 只有设备 presence 在线**且**遥测新鲜才允许下发：飞行态 2 秒，地面态 5 秒。不满足直接返回 409，**不排队** —— 延迟送达的"返航"比拒绝更危险。`GET /api/v1/uavs/{id}/readiness` 返回当前是否可下发以及原因，供界面提前禁用按钮。
+
+指令接口返回 HTTP 202 与 `commandId`，并接受可选的 `Idempotency-Key`。状态为 `QUEUED → SENT → ACKNOWLEDGED`，失败为 `FAILED`；8 秒内没有最终 ACK 转 `TIMEOUT`。QoS 1 的重投由 `eventId` 去重，不会写出第二条飞行日志。
+
+**dispatch receipt ≠ ACK。** 回执只表示"传输层已接收"，设备是否执行由后续的 ACK 决定。
+
+## 实时事件流
+
+`/api/v1/uavs/telemetry/stream` 使用 SSE。整个进程**一个**调度器和一个投递线程池服务所有操作员，不再是每个客户端一个线程。
+
+| 事件              | 内容                 | 时机                 |
+| ----------------- | -------------------- | -------------------- |
+| `telemetry`       | 全量设备快照         | 连接时 + 每 30 秒    |
+| `telemetry-delta` | **仅发生变化的设备** | 每批 outbox（200ms） |
+| `alert`           | 全量告警             | 连接时 + 每 30 秒    |
+| `command-status`  | 全量指令             | ACK 到达时           |
+| `task-status`     | 全量任务             | 连接时 + 每 30 秒    |
+| `heartbeat`       | 时间与订阅数         | 每 15 秒             |
+
+每个事件都带自增 id。客户端重连时自动携带 `Last-Event-ID`，服务端只补发缺口；缺口超出重放缓冲时改发全量快照，客户端仍然收敛到正确状态。
+
+`telemetry-delta` 按 id **合并**，`telemetry` 整体**替换**。旧客户端只处理后者，因此不受影响（[ADR 0004](/docs/adr/0004-api-v1-compatibility)）。
+
+跟不上的客户端会被**断开**而不是阻塞发布方 —— 它会带着 `Last-Event-ID` 重连并被重新同步。并发订阅数有上限，超出返回 503。
+
+## 遥测历史
+
+`GET /api/v1/uavs/{id}/telemetry?from&to&resolution=raw|1m`。`resolution` 显式选表，不自动降级；单次查询最长 24 小时，超出保留期返回 400（[ADR 0003](/docs/adr/0003-telemetry-retention)）。
+
+未配置 `CLICKHOUSE_URL` 时使用进程内实现，保留语义与生产一致 —— 生产会拒绝的查询在开发环境同样会被拒绝。
+
+## 库存与订单
+
+商品有**三个**库存数字，含义见 `CONTEXT.md` 与 [ADR 0001](/docs/adr/0001-inventory-reservation)：
+
+| 字段            | 含义                                    |
+| --------------- | --------------------------------------- |
+| `stock`         | **可用库存** —— 新订单还能占用的数量    |
+| `reservedStock` | **预留库存** —— 已被未完成订单占住      |
+| `onHandStock`   | **在手库存** —— `stock + reservedStock` |
+
+`stock` 的含义与旧版本一致，`reservedStock` 与 `onHandStock` 是新增字段，旧客户端不受影响（[ADR 0004](/docs/adr/0004-api-v1-compatibility)）。
+
+下单占用、取消释放、送达核销、任务失败保留占用 —— 四种迁移都在单个事务内完成，并在 `inventory_ledger` 留下一行不可变流水。订单每次状态变化写入 `order_status_history`，并推进 `orders.version` 乐观锁。
+
+`POST /api/v1/orders` 接受可选的 `Idempotency-Key` 请求头。**新客户端必须发送**：重放同一个键返回原来那笔订单而不是再建一笔；用同一个键提交不同内容会返回 409。
+
+新增只读入口：
+
+- `GET /api/v1/orders/{id}/inventory-ledger` —— 该订单背后的每一次库存变动
+- `GET /api/v1/orders/{id}/history` —— 谁、什么时候、为什么改了订单状态
+
+主数据不再物理删除：被订单引用的客户会被停用（`enabled = false`），被订单引用的商品会被下架（`status = 0`）。
 
 ## 设备、地图与语音
 
@@ -37,3 +93,15 @@ API 使用 `{ code, message, data, traceId }` 信封，分页使用 `{ items, pa
 - Web refresh token 使用 HttpOnly cookie；Tauri 使用 Stronghold。
 - 更新服务只有在配置签名 manifest 与 pubkey 后才能启用。
 - `admin` 拥有完整权限，`manager` 不能管理管理员或删除主数据。
+
+## 本地依赖
+
+`docker-compose.yml` 同时供本地开发和 CI 使用，版本不会漂移：
+
+```bash
+docker compose up -d --wait mysql mqtt clickhouse
+```
+
+- **MySQL** 交易事实来源
+- **EMQX** MQTT 5 broker（[ADR 0002](/docs/adr/0002-mqtt-topology)），本地匿名接入，生产使用 mTLS
+- **ClickHouse** 遥测历史（[ADR 0003](/docs/adr/0003-telemetry-retention)），本地单机镜像代替 Cloud

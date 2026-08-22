@@ -41,8 +41,14 @@ export function RemoteDataBridge() {
       useProductStore.setState({
         authenticated: true,
         staff: session.data,
+        sessionRecoveryPending: false,
         dataSyncPending: true,
       })
+    }
+    // Recovery is over the moment we know the answer, whichever way it went. Clearing it
+    // only on success would leave a signed-out user staring at the splash forever.
+    if (!authenticated && (session.isError || isSessionRecoverySuppressed())) {
+      useProductStore.setState({ sessionRecoveryPending: false })
     }
     if (!authenticated) return
     const dataSync = deriveDataSyncState(
@@ -72,6 +78,20 @@ export function RemoteDataBridge() {
     const controller = new AbortController()
     void streamTelemetry(
       (event) => {
+        // A delta carries only the devices that moved, so it is merged by id. The
+        // full-collection events below are periodic resyncs and replace outright, which is
+        // what bounds how far a client that missed deltas can drift.
+        if (event.event === "telemetry-delta") {
+          const parsed = z.array(uavSchema).safeParse(event.data)
+          if (!parsed.success) return
+          useProductStore.setState((state) => {
+            const byId = new Map(state.uavs.map((uav) => [uav.id, uav]))
+            parsed.data.forEach((uav) => byId.set(uav.id, uav))
+            return { uavs: [...byId.values()].sort((left, right) => left.id - right.id) }
+          })
+          return
+        }
+
         const schemas = {
           telemetry: [uavSchema, "uavs"],
           alert: [alertSchema, "alerts"],

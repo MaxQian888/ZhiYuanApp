@@ -42,6 +42,11 @@ public class PlatformDatabase {
         this.jdbc = jdbc;
     }
 
+    /** Shared with the fulfilment adapter so both write through one connection pool. */
+    public JdbcTemplate jdbc() {
+        return jdbc;
+    }
+
     public Snapshot snapshot() {
         return new Snapshot(loadUavs(), loadAlerts(), loadCommands(), loadUsers(),
             loadGoods(), loadOrders(), loadTasks(), loadPods(), loadBindings());
@@ -55,8 +60,23 @@ public class PlatformDatabase {
         jdbc.update("UPDATE users SET username = ?, phone = ? WHERE id = ?", username, phone, id);
     }
 
+    /** Physical delete. Only legal when nothing references the customer; see {@link #disableUser}. */
     public void deleteUser(long id) {
         jdbc.update("DELETE FROM users WHERE id = ?", id);
+    }
+
+    public void disableUser(long id) {
+        jdbc.update("UPDATE users SET enabled = FALSE WHERE id = ?", id);
+    }
+
+    public long countOrdersForUser(long userId) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM orders WHERE user_id = ?", Long.class, userId);
+        return count == null ? 0 : count;
+    }
+
+    public long countOrderItemsForGoods(long goodsId) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM order_items WHERE goods_id = ?", Long.class, goodsId);
+        return count == null ? 0 : count;
     }
 
     public long insertAddress(long userId, String name, String phone, String detail, double latitude,
@@ -82,10 +102,16 @@ public class PlatformDatabase {
     }
 
     public long insertGoods(String name, String category, BigDecimal price, int stock, double weight, int status) {
+        // reserved_stock defaults to 0: brand-new goods cannot already be claimed.
         return insert("INSERT INTO goods (name, category, price, stock, weight, status) VALUES (?, ?, ?, ?, ?, ?)",
             name, category, price, stock, weight, status);
     }
 
+    /**
+     * Edits the product record. {@code stock} here is <em>available</em> stock and the
+     * write is a manual correction, so it is journalled as an ADJUST ledger row by the
+     * caller rather than silently overwriting what reservations are holding.
+     */
     public void updateGoods(long id, String name, String category, BigDecimal price, int stock, double weight, int status) {
         jdbc.update("UPDATE goods SET name = ?, category = ?, price = ?, stock = ?, weight = ?, status = ? WHERE id = ?",
             name, category, price, stock, weight, status, id);
@@ -128,6 +154,12 @@ public class PlatformDatabase {
             orderId, goods.id(), goods.name(), count, goods.price());
     }
 
+    /**
+     * @deprecated Stock movements go through
+     * {@link com.zhiyuan.fulfilment.FulfilmentStore#applyInventory} so that every change
+     * lands in the ledger with a reason. Kept only until the last caller is migrated.
+     */
+    @Deprecated
     public boolean decrementStock(long goodsId, int count) {
         return jdbc.update("UPDATE goods SET stock = stock - ? WHERE id = ? AND status = 1 AND stock >= ?", count, goodsId, count) == 1;
     }
@@ -194,6 +226,12 @@ public class PlatformDatabase {
     public long staffId(String username) {
         Long id = jdbc.queryForObject("SELECT id FROM admins WHERE username = ?", Long.class, username);
         return id == null ? 1 : id;
+    }
+
+    /** Current device snapshots only. Used by the realtime path, which polls far more often
+     * than anything else and must not drag the whole platform snapshot with it. */
+    public List<Models.Uav> uavs() {
+        return loadUavs();
     }
 
     private List<Models.Uav> loadUavs() {
@@ -276,14 +314,15 @@ public class PlatformDatabase {
         return jdbc.query("SELECT * FROM users ORDER BY id", (rs, row) -> {
             long id = rs.getLong("id");
             return new Models.User(id, rs.getString("username"), rs.getString("phone"),
-                offset(rs.getTimestamp("created_at")), List.copyOf(addresses.getOrDefault(id, List.of())));
+                offset(rs.getTimestamp("created_at")), List.copyOf(addresses.getOrDefault(id, List.of())),
+                rs.getBoolean("enabled"));
         });
     }
 
     private List<Models.Goods> loadGoods() {
         return jdbc.query("SELECT * FROM goods ORDER BY id", (rs, row) -> new Models.Goods(
             rs.getLong("id"), rs.getString("name"), rs.getString("category"), rs.getBigDecimal("price"),
-            rs.getInt("stock"), rs.getDouble("weight"), rs.getInt("status")));
+            rs.getInt("stock"), rs.getDouble("weight"), rs.getInt("status"), rs.getInt("reserved_stock")));
     }
 
     private List<Models.Order> loadOrders() {
@@ -298,7 +337,7 @@ public class PlatformDatabase {
             return new Models.Order(id, rs.getString("order_no"), rs.getLong("user_id"), rs.getLong("address_id"),
                 rs.getBigDecimal("total_price"), rs.getString("status"), offset(rs.getTimestamp("created_at")),
                 addressSnapshot(rs.getString("address_snapshot")),
-                List.copyOf(items.getOrDefault(id, List.of())));
+                List.copyOf(items.getOrDefault(id, List.of())), rs.getInt("version"));
         });
     }
 

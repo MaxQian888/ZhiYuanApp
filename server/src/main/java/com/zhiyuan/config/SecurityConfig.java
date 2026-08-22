@@ -21,7 +21,6 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import tools.jackson.databind.ObjectMapper;
 
 @Configuration
@@ -52,7 +51,16 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
-                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/system/about", "/api/v1/system/version").permitAll()
+                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/auth/mfa/verify", "/api/v1/system/about", "/api/v1/system/version").permitAll()
+                // Probes must answer before anyone is authenticated — a readiness check that
+                // needs a token cannot be used by the thing deciding whether to send traffic
+                // here. These two groups are configured to report a bare status, so being
+                // public costs nothing.
+                .requestMatchers("/actuator/health/liveness", "/actuator/health/readiness",
+                    "/actuator/info").permitAll()
+                // Everything else, /actuator/health included, describes the inside of the
+                // platform: component names, queue depths, message volumes.
+                .requestMatchers("/actuator/**").hasRole("ADMIN")
                 .requestMatchers("/api/v1/admins/**").hasRole("ADMIN")
                 .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/v1/users/**", "/api/v1/goods/**").hasRole("ADMIN")
                 .anyRequest().authenticated())
@@ -66,6 +74,6 @@ public class SecurityConfig {
     private static void writeError(HttpServletResponse response, ObjectMapper mapper, int status, String message) throws java.io.IOException {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        mapper.writeValue(response.getOutputStream(), ApiResponse.error(status, message, UUID.randomUUID().toString()));
+        mapper.writeValue(response.getOutputStream(), ApiResponse.error(status, message));
     }
 }

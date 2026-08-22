@@ -1,6 +1,11 @@
 package com.zhiyuan.service;
 
 import com.zhiyuan.domain.Models;
+import com.zhiyuan.fulfilment.FulfilmentConflictException;
+import com.zhiyuan.fulfilment.FulfilmentService;
+import com.zhiyuan.fulfilment.FulfilmentStore;
+import com.zhiyuan.fulfilment.InMemoryFulfilmentStore;
+import com.zhiyuan.fulfilment.SqlFulfilmentStore;
 import com.zhiyuan.persistence.PlatformDatabase;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -48,6 +53,16 @@ public class PlatformStore {
     private PlatformDatabase database;
     private TransactionTemplate transactions;
 
+    /**
+     * Order, inventory and task rules. Both data modes go through this — the reservation
+     * lifecycle is identical whether the rows live in MySQL or in this process, which is
+     * what lets one set of contract tests cover both (ADR 0001).
+     */
+    private FulfilmentService fulfilment;
+
+    /** Non-null only in simulator mode, where it is the source of truth for fulfilment. */
+    private InMemoryFulfilmentStore memoryFulfilment;
+
     public PlatformStore() {
         seedMemory();
     }
@@ -56,7 +71,13 @@ public class PlatformStore {
     public PlatformStore(PlatformDatabase database, PlatformTransactionManager transactionManager) {
         this.database = database;
         this.transactions = new TransactionTemplate(transactionManager);
+        this.fulfilment = new FulfilmentService(new SqlFulfilmentStore(database.jdbc(), transactionManager));
         reload();
+    }
+
+    /** Exposed so tests can drive the same rules the API does. */
+    public FulfilmentService fulfilment() {
+        return fulfilment;
     }
 
     private void seedMemory() {
@@ -77,25 +98,57 @@ public class PlatformStore {
         auditLogs.put("F-2",new Models.AuditLog("F-2","FLIGHT",1L,"遥测同步","高度 30m，速度 5.2m/s","RECORDED","UAV",null,null,now.minusMinutes(23)));
         auditLogs.put("F-3",new Models.AuditLog("F-3","FLIGHT",3L,"进入充电","休眠仓 POD-03","RECORDED","UAV",null,null,now.minusMinutes(28)));
         auditLogs.put("C-seed-voice",new Models.AuditLog("C-seed-voice","VOICE",1L,"RETURN_HOME","无人机一号返航","ACKNOWLEDGED","VOICE",1L,"陈屿",now.minusMinutes(12)));
-        users.put(1L,new Models.User(1,"王宁","13900000001",now.minusMonths(6),List.of(new Models.Address(1,1,"王宁","13900000001","南京市玄武区珠江路 1 号",32.05,118.79,true))));
-        users.put(2L,new Models.User(2,"赵青","13900000002",now.minusMonths(4),List.of(new Models.Address(2,2,"赵青","13900000002","苏州市工业园区星海街 8 号",31.31,120.67,true))));
-        users.put(3L,new Models.User(3,"李晗","13900000003",now.minusMonths(2),List.of()));
-        goods.put(1L,new Models.Goods(1,"应急药品包","medicine",new BigDecimal("89.00"),42,0.8,1));
-        goods.put(2L,new Models.Goods(2,"冷链餐食 A","food",new BigDecimal("42.50"),18,1.2,1));
-        goods.put(3L,new Models.Goods(3,"工业检测仪","industry",new BigDecimal("1299.00"),5,2.4,1));
-        goods.put(4L,new Models.Goods(4,"生活补给包","life",new BigDecimal("65.00"),0,1.6,0));
-        Models.AddressSnapshot wang=new Models.AddressSnapshot("王宁","13900000001","南京市玄武区珠江路 1 号");
-        Models.AddressSnapshot zhao=new Models.AddressSnapshot("赵青","13900000002","苏州市工业园区星海街 8 号");
-        orders.put(1L,new Models.Order(1,"ZY-20260812-001",1,1,new BigDecimal("89.00"),"CREATED",now.minusMinutes(74),wang,List.of(new Models.OrderItem(1,1,"应急药品包",1,new BigDecimal("89.00")))));
-        orders.put(2L,new Models.Order(2,"ZY-20260812-002",2,2,new BigDecimal("85.00"),"DISPATCHING",now.minusMinutes(52),zhao,List.of(new Models.OrderItem(2,2,"冷链餐食 A",2,new BigDecimal("42.50")))));
-        orders.put(3L,new Models.Order(3,"ZY-20260812-003",2,2,new BigDecimal("1299.00"),"DELIVERING",now.minusMinutes(34),zhao,List.of(new Models.OrderItem(3,3,"工业检测仪",1,new BigDecimal("1299.00")))));
-        tasks.put(1L,new Models.Task(1,2,1,"WAITING",null,null,null));
-        tasks.put(2L,new Models.Task(2,3,2,"FLYING",now.minusMinutes(21),null,null));
+        users.put(1L,new Models.User(1,"王宁","13900000001",now.minusMonths(6),List.of(new Models.Address(1,1,"王宁","13900000001","南京市玄武区珠江路 1 号",32.05,118.79,true)),true));
+        users.put(2L,new Models.User(2,"赵青","13900000002",now.minusMonths(4),List.of(new Models.Address(2,2,"赵青","13900000002","苏州市工业园区星海街 8 号",31.31,120.67,true)),true));
+        users.put(3L,new Models.User(3,"李晗","13900000003",now.minusMonths(2),List.of(),true));
+        goods.put(1L,new Models.Goods(1,"应急药品包","medicine",new BigDecimal("89.00"),42,0.8,1,0));
+        goods.put(2L,new Models.Goods(2,"冷链餐食 A","food",new BigDecimal("42.50"),18,1.2,1,0));
+        goods.put(3L,new Models.Goods(3,"工业检测仪","industry",new BigDecimal("1299.00"),5,2.4,1,0));
+        goods.put(4L,new Models.Goods(4,"生活补给包","life",new BigDecimal("65.00"),0,1.6,0,0));
         pods.put(1L,new Models.Pod(1,"POD-01","南京","CLOSED",1L));
         pods.put(2L,new Models.Pod(2,"POD-02","苏州","OPEN",null));
         pods.put(3L,new Models.Pod(3,"POD-03","上海","ERROR",3L));
         bindings.put(1L,new Models.Binding(1,1,1,now.minusMonths(6),null));
         bindings.put(2L,new Models.Binding(2,1,3,now.minusMonths(5),null));
+        seedMemoryFulfilment();
+    }
+
+    /**
+     * Replays the seeded orders through the real rules instead of hand-placing rows.
+     * Doing it this way means the simulator starts with a coherent ledger: the three
+     * in-flight orders actually hold reservations, exactly as they would in production.
+     */
+    private void seedMemoryFulfilment() {
+        memoryFulfilment = new InMemoryFulfilmentStore();
+        users.values().forEach(memoryFulfilment::putUser);
+        goods.values().forEach(memoryFulfilment::putGoods);
+        uavs.keySet().forEach(memoryFulfilment::putUav);
+        fulfilment = new FulfilmentService(memoryFulfilment);
+
+        // Seeded orders, recreated as real reservations.
+        fulfilment.createOrder(1, 1, List.of(new com.zhiyuan.fulfilment.OrderLine(1, 1)), 1L, null);
+        fulfilment.createOrder(2, 2, List.of(new com.zhiyuan.fulfilment.OrderLine(2, 2)), 1L, null);
+        fulfilment.createOrder(2, 2, List.of(new com.zhiyuan.fulfilment.OrderLine(3, 1)), 1L, null);
+        fulfilment.dispatchOrder(2, 1, 1L);
+        long deliveringTask = fulfilment.dispatchOrder(3, 2, 1L).id();
+        fulfilment.transitionTask(deliveringTask, "FLYING", null, 1L);
+
+        orders.clear();
+        tasks.clear();
+        projectFulfilment();
+    }
+
+    /** Copies the in-memory fulfilment state into the read-model maps the API serves from. */
+    private void projectFulfilment() {
+        replace(goods, memoryFulfilment.allGoods(), Models.Goods::id);
+        replace(orders, memoryFulfilment.allOrders(), Models.Order::id);
+        replace(tasks, memoryFulfilment.allTasks(), Models.Task::id);
+    }
+
+    /** Refreshes the read model after a fulfilment write, whichever adapter performed it. */
+    private void refreshFulfilment() {
+        if (database != null) reload();
+        else projectFulfilment();
     }
 
     private void putUav(long id,String code,String name,String rfid,String model,String owner,String status,int battery,boolean pod,String region,double altitude,double speed,double lat,double lng,OffsetDateTime at) {
@@ -123,28 +176,173 @@ public class PlatformStore {
     public synchronized Models.ControlCommand acknowledgeCommand(String id,String event,String detail) {Models.ControlCommand c=command(id);Models.Uav current=uav(c.uavId());if(database!=null)transact(()->{database.updateCommandStatus(id,"ACKNOWLEDGED");database.insertFlightLog(c.uavId(),event,detail,current.latitude(),current.longitude());});Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),"ACKNOWLEDGED",c.source(),c.transcript(),c.createdAt());commands.put(id,next);if(database==null)recordMemoryFlightLog(current,event,detail);Models.AuditLog log=auditLogs.get("C-"+id);if(log!=null)auditLogs.put(log.id(),new Models.AuditLog(log.id(),log.category(),log.uavId(),log.title(),log.detail(),"ACKNOWLEDGED",log.source(),log.operatorId(),log.operatorName(),log.occurredAt()));trimCommandCache();return next;}
     public synchronized List<Models.ControlCommand> commands() { return commands.values().stream().sorted(Comparator.comparing(Models.ControlCommand::createdAt).reversed()).toList(); }
     public synchronized List<Models.User> users(String query) { String q=query==null?"":query.trim(); return sorted(users).stream().filter(u -> q.isBlank() || u.username().contains(q) || u.phone().contains(q)).toList(); }
-    public synchronized Models.User addUser(String username,String phone) { requirePhone(phone); if(users.values().stream().anyMatch(u->u.phone().equals(phone))) conflict("Phone already exists"); if(database!=null){long id=database.insertUser(username,phone);reload();return required(users.get(id),"User not found");} long id=userIds.incrementAndGet(); Models.User u=new Models.User(id,username,phone,now(),List.of()); users.put(id,u); return u; }
-    public synchronized Models.User updateUser(long id,String username,String phone) { requirePhone(phone); Models.User u=required(users.get(id),"User not found"); if(users.values().stream().anyMatch(candidate->candidate.id()!=id&&candidate.phone().equals(phone))) conflict("Phone already exists"); if(database!=null){database.updateUser(id,username,phone);reload();return required(users.get(id),"User not found");} Models.User next=new Models.User(id,username,phone,u.createdAt(),u.addresses()); users.put(id,next); return next; }
-    public synchronized void deleteUser(long id) { required(users.get(id),"User not found"); if(database!=null){database.deleteUser(id);reload();return;} users.remove(id); }
-    public synchronized Models.Address addAddress(long userId,String name,String phone,String detail,double lat,double lng,boolean makeDefault) { requirePhone(phone); Models.User user=required(users.get(userId),"User not found"); boolean targetDefault=makeDefault || user.addresses().isEmpty(); if(database!=null){long[] id={0};transact(()->id[0]=database.insertAddress(userId,name,phone,detail,lat,lng,targetDefault));reload();return users.get(userId).addresses().stream().filter(a->a.id()==id[0]).findFirst().orElseThrow();} long id=addressIds.incrementAndGet(); List<Models.Address> list=new ArrayList<>(); for(Models.Address a:user.addresses()) list.add(new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),targetDefault?false:a.isDefault())); Models.Address address=new Models.Address(id,userId,name,phone,detail,lat,lng,targetDefault); list.add(address); users.put(userId,new Models.User(user.id(),user.username(),user.phone(),user.createdAt(),List.copyOf(list))); return address; }
-    public synchronized void deleteAddress(long userId,long addressId) { Models.User user=required(users.get(userId),"User not found"); Models.Address removed=user.addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found")); if(database!=null){Long nextDefault=removed.isDefault()?user.addresses().stream().filter(a->a.id()!=addressId).map(Models.Address::id).findFirst().orElse(null):null;transact(()->{database.deleteAddress(userId,addressId);if(nextDefault!=null)database.setDefaultAddress(userId,nextDefault);});reload();return;} List<Models.Address> list=user.addresses().stream().filter(a->a.id()!=addressId).toList(); if(!list.isEmpty()&&list.stream().noneMatch(Models.Address::isDefault)){ Models.Address a=list.get(0); List<Models.Address> fixed=new ArrayList<>(list); fixed.set(0,new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),true)); list=List.copyOf(fixed); } users.put(userId,new Models.User(user.id(),user.username(),user.phone(),user.createdAt(),list)); }
-    public synchronized Models.Address updateAddress(long userId,long addressId,String name,String phone,String detail,double lat,double lng,boolean makeDefault) { requirePhone(phone);Models.User user=required(users.get(userId),"User not found");Models.Address current=user.addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found"));boolean targetDefault=makeDefault||current.isDefault();if(database!=null){transact(()->database.updateAddress(userId,addressId,name,phone,detail,lat,lng,targetDefault));reload();return users.get(userId).addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow();}List<Models.Address> list=user.addresses().stream().map(a->a.id()==addressId?new Models.Address(a.id(),a.userId(),name,phone,detail,lat,lng,targetDefault):targetDefault?new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),false):a).toList();users.put(userId,new Models.User(user.id(),user.username(),user.phone(),user.createdAt(),list));return list.stream().filter(a->a.id()==addressId).findFirst().orElseThrow();}
-    public synchronized Models.Address setDefaultAddress(long userId,long addressId) { Models.User user=required(users.get(userId),"User not found"); Models.Address existing=user.addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found")); if(database!=null){database.setDefaultAddress(userId,addressId);reload();return users.get(userId).addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow();} Models.Address[] selected={null}; List<Models.Address> list=user.addresses().stream().map(a->{ boolean d=a.id()==addressId; Models.Address next=new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),d); if(d) selected[0]=next; return next; }).toList(); users.put(userId,new Models.User(user.id(),user.username(),user.phone(),user.createdAt(),list)); return existing.isDefault()?existing:selected[0]; }
+    public synchronized Models.User addUser(String username,String phone) { requirePhone(phone); if(users.values().stream().anyMatch(u->u.phone().equals(phone))) conflict("Phone already exists"); if(database!=null){long id=database.insertUser(username,phone);reload();return required(users.get(id),"User not found");} long id=userIds.incrementAndGet(); Models.User u=new Models.User(id,username,phone,now(),List.of(),true); users.put(id,u); memoryFulfilment.putUser(u); return u; }
+    public synchronized Models.User updateUser(long id,String username,String phone) { requirePhone(phone); Models.User u=required(users.get(id),"User not found"); if(users.values().stream().anyMatch(candidate->candidate.id()!=id&&candidate.phone().equals(phone))) conflict("Phone already exists"); if(database!=null){database.updateUser(id,username,phone);reload();return required(users.get(id),"User not found");} Models.User next=new Models.User(id,username,phone,u.createdAt(),u.addresses(),u.enabled()); users.put(id,next); memoryFulfilment.putUser(next); return next; }
+    /**
+     * Removes a customer, or disables one that orders still reference. Physically deleting
+     * a customer with order history would orphan the orders and silently rewrite the past
+     * (CONTEXT.md §1); a disabled customer keeps their history and can place no new orders.
+     */
+    public synchronized void deleteUser(long id) {
+        Models.User existing = required(users.get(id), "User not found");
+        if (database != null) {
+            if (database.countOrdersForUser(id) > 0) database.disableUser(id);
+            else database.deleteUser(id);
+            reload();
+            return;
+        }
+        boolean referenced = orders.values().stream().anyMatch(order -> order.userId() == id);
+        if (referenced) {
+            Models.User disabled = new Models.User(existing.id(), existing.username(), existing.phone(),
+                existing.createdAt(), existing.addresses(), false);
+            users.put(id, disabled);
+            memoryFulfilment.putUser(disabled);
+            return;
+        }
+        users.remove(id);
+    }
+    public synchronized Models.Address addAddress(long userId,String name,String phone,String detail,double lat,double lng,boolean makeDefault) { requirePhone(phone); Models.User user=required(users.get(userId),"User not found"); boolean targetDefault=makeDefault || user.addresses().isEmpty(); if(database!=null){long[] id={0};transact(()->id[0]=database.insertAddress(userId,name,phone,detail,lat,lng,targetDefault));reload();return users.get(userId).addresses().stream().filter(a->a.id()==id[0]).findFirst().orElseThrow();} long id=addressIds.incrementAndGet(); List<Models.Address> list=new ArrayList<>(); for(Models.Address a:user.addresses()) list.add(new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),targetDefault?false:a.isDefault())); Models.Address address=new Models.Address(id,userId,name,phone,detail,lat,lng,targetDefault); list.add(address); users.put(userId,withAddresses(user,List.copyOf(list))); return address; }
+    public synchronized void deleteAddress(long userId,long addressId) { Models.User user=required(users.get(userId),"User not found"); Models.Address removed=user.addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found")); if(database!=null){Long nextDefault=removed.isDefault()?user.addresses().stream().filter(a->a.id()!=addressId).map(Models.Address::id).findFirst().orElse(null):null;transact(()->{database.deleteAddress(userId,addressId);if(nextDefault!=null)database.setDefaultAddress(userId,nextDefault);});reload();return;} List<Models.Address> list=user.addresses().stream().filter(a->a.id()!=addressId).toList(); if(!list.isEmpty()&&list.stream().noneMatch(Models.Address::isDefault)){ Models.Address a=list.get(0); List<Models.Address> fixed=new ArrayList<>(list); fixed.set(0,new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),true)); list=List.copyOf(fixed); } users.put(userId,withAddresses(user,list)); }
+    public synchronized Models.Address updateAddress(long userId,long addressId,String name,String phone,String detail,double lat,double lng,boolean makeDefault) { requirePhone(phone);Models.User user=required(users.get(userId),"User not found");Models.Address current=user.addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found"));boolean targetDefault=makeDefault||current.isDefault();if(database!=null){transact(()->database.updateAddress(userId,addressId,name,phone,detail,lat,lng,targetDefault));reload();return users.get(userId).addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow();}List<Models.Address> list=user.addresses().stream().map(a->a.id()==addressId?new Models.Address(a.id(),a.userId(),name,phone,detail,lat,lng,targetDefault):targetDefault?new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),false):a).toList();users.put(userId,withAddresses(user,list));return list.stream().filter(a->a.id()==addressId).findFirst().orElseThrow();}
+    public synchronized Models.Address setDefaultAddress(long userId,long addressId) { Models.User user=required(users.get(userId),"User not found"); Models.Address existing=user.addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found")); if(database!=null){database.setDefaultAddress(userId,addressId);reload();return users.get(userId).addresses().stream().filter(a->a.id()==addressId).findFirst().orElseThrow();} Models.Address[] selected={null}; List<Models.Address> list=user.addresses().stream().map(a->{ boolean d=a.id()==addressId; Models.Address next=new Models.Address(a.id(),a.userId(),a.receiverName(),a.receiverPhone(),a.detail(),a.latitude(),a.longitude(),d); if(d) selected[0]=next; return next; }).toList(); users.put(userId,withAddresses(user,list)); return existing.isDefault()?existing:selected[0]; }
     public synchronized List<Models.Goods> goods(String query,String category) { String q=query==null?"":query.trim(); return sorted(goods).stream().filter(g->q.isBlank()||g.name().contains(q)).filter(g->category==null||category.isBlank()||g.category().equals(category)).toList(); }
-    public synchronized Models.Goods addGoods(String name,String category,BigDecimal price,int stock,double weight,int status) { validateGoods(category,price,stock,weight,status); if(database!=null){long id=database.insertGoods(name,category,price,stock,weight,status);reload();return required(goods.get(id),"Goods not found");} long id=goodsIds.incrementAndGet(); Models.Goods item=new Models.Goods(id,name,category,price,stock,weight,status); goods.put(id,item); return item; }
-    public synchronized Models.Goods updateGoods(long id,String name,String category,BigDecimal price,int stock,double weight,int status) { required(goods.get(id),"Goods not found"); validateGoods(category,price,stock,weight,status); if(database!=null){database.updateGoods(id,name,category,price,stock,weight,status);reload();return required(goods.get(id),"Goods not found");} Models.Goods item=new Models.Goods(id,name,category,price,stock,weight,status); goods.put(id,item); return item; }
-    public synchronized void deleteGoods(long id) { required(goods.get(id),"Goods not found"); if(database!=null){database.deleteGoods(id);reload();return;} goods.remove(id); }
-    public synchronized void deleteGoods(Set<Long> ids) { ids.forEach(id->required(goods.get(id),"Goods not found"));if(database!=null){transact(()->database.deleteGoods(ids));reload();return;}ids.forEach(goods::remove); }
-    public synchronized Models.Goods toggleGoods(long id) { Models.Goods g=required(goods.get(id),"Goods not found"); int status=g.status()==1?0:1;if(database!=null){database.updateGoodsStatus(id,status);reload();return required(goods.get(id),"Goods not found");} Models.Goods next=new Models.Goods(g.id(),g.name(),g.category(),g.price(),g.stock(),g.weight(),status); goods.put(id,next); return next; }
+    public synchronized Models.Goods addGoods(String name,String category,BigDecimal price,int stock,double weight,int status) { validateGoods(category,price,stock,weight,status); if(database!=null){long id=database.insertGoods(name,category,price,stock,weight,status);reload();return required(goods.get(id),"Goods not found");} long id=goodsIds.incrementAndGet(); Models.Goods item=new Models.Goods(id,name,category,price,stock,weight,status,0); goods.put(id,item); memoryFulfilment.putGoods(item); return item; }
+    /** {@code stock} is available stock; whatever orders have reserved is left untouched. */
+    public synchronized Models.Goods updateGoods(long id,String name,String category,BigDecimal price,int stock,double weight,int status) { Models.Goods existing=required(goods.get(id),"Goods not found"); validateGoods(category,price,stock,weight,status); if(database!=null){database.updateGoods(id,name,category,price,stock,weight,status);reload();return required(goods.get(id),"Goods not found");} Models.Goods item=new Models.Goods(id,name,category,price,stock,weight,status,existing.reservedStock()); goods.put(id,item); memoryFulfilment.putGoods(item); return item; }
+    /** Delists a product that orders reference; deletes one that nothing does. */
+    public synchronized void deleteGoods(long id) {
+        Models.Goods existing = required(goods.get(id), "Goods not found");
+        if (database != null) {
+            if (database.countOrderItemsForGoods(id) > 0) database.updateGoodsStatus(id, 0);
+            else database.deleteGoods(id);
+            reload();
+            return;
+        }
+        boolean referenced = existing.reservedStock() > 0
+            || orders.values().stream().flatMap(order -> order.items().stream()).anyMatch(item -> item.goodsId() == id);
+        if (referenced) {
+            Models.Goods delisted = new Models.Goods(existing.id(), existing.name(), existing.category(),
+                existing.price(), existing.stock(), existing.weight(), 0, existing.reservedStock());
+            goods.put(id, delisted);
+            memoryFulfilment.putGoods(delisted);
+            return;
+        }
+        goods.remove(id);
+    }
+    /** Batch form of {@link #deleteGoods(long)}: each product is delisted or deleted on its own merits. */
+    public synchronized void deleteGoods(Set<Long> ids) {
+        ids.forEach(id -> required(goods.get(id), "Goods not found"));
+        if (database != null) {
+            transact(() -> ids.forEach(id -> {
+                if (database.countOrderItemsForGoods(id) > 0) database.updateGoodsStatus(id, 0);
+                else database.deleteGoods(id);
+            }));
+            reload();
+            return;
+        }
+        ids.forEach(this::deleteGoods);
+    }
+    public synchronized Models.Goods toggleGoods(long id) { Models.Goods g=required(goods.get(id),"Goods not found"); int status=g.status()==1?0:1;if(database!=null){database.updateGoodsStatus(id,status);reload();return required(goods.get(id),"Goods not found");} Models.Goods next=new Models.Goods(g.id(),g.name(),g.category(),g.price(),g.stock(),g.weight(),status,g.reservedStock()); goods.put(id,next); memoryFulfilment.putGoods(next); return next; }
     public synchronized List<Models.Order> orders(String status) { return sorted(orders).stream().filter(o->status==null||status.isBlank()||o.status().equals(status)).toList(); }
     public synchronized Models.Order order(long id) { return required(orders.get(id),"Order not found"); }
-    public synchronized Models.Order createOrder(long userId,long addressId,List<OrderLine> lines) { Models.User user=required(users.get(userId),"User not found");Models.Address address=user.addresses().stream().filter(item->item.id()==addressId).findFirst().orElseThrow(()->notFound("Address not found"));if(lines==null||lines.isEmpty()||lines.stream().anyMatch(line->line.count()<=0))throw new IllegalArgumentException("Order must contain positive item quantities");List<Models.OrderItem> items=new ArrayList<>();BigDecimal total=BigDecimal.ZERO;long itemId=1;for(OrderLine line:lines){Models.Goods item=required(goods.get(line.goodsId()),"Goods not found");if(item.status()!=1)conflict("Goods is unavailable: "+item.name());if(item.stock()<line.count())conflict("Insufficient stock: "+item.name());items.add(new Models.OrderItem(itemId++,item.id(),item.name(),line.count(),item.price()));total=total.add(item.price().multiply(BigDecimal.valueOf(line.count())));}String orderNo="ZY-"+now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))+"-"+UUID.randomUUID().toString().substring(0,8).toUpperCase(Locale.ROOT);Models.AddressSnapshot snapshot=new Models.AddressSnapshot(address.receiverName(),address.receiverPhone(),address.detail());if(database!=null){long[] id={0};BigDecimal finalTotal=total;transact(()->{id[0]=database.insertOrder(orderNo,userId,addressId,snapshot,finalTotal);for(OrderLine line:lines){Models.Goods item=goods.get(line.goodsId());if(!database.decrementStock(item.id(),line.count()))conflict("Insufficient stock: "+item.name());database.insertOrderItem(id[0],item,line.count());}});reload();return order(id[0]);}long id=orders.keySet().stream().mapToLong(Long::longValue).max().orElse(0)+1;Models.Order created=new Models.Order(id,orderNo,userId,addressId,total,"CREATED",now(),snapshot,List.copyOf(items));orders.put(id,created);for(OrderLine line:lines){Models.Goods item=goods.get(line.goodsId());goods.put(item.id(),new Models.Goods(item.id(),item.name(),item.category(),item.price(),item.stock()-line.count(),item.weight(),item.status()));}return created; }
-    public synchronized Models.Order transitionOrder(long id,String target) { Models.Order o=order(id); Map<String,Set<String>> allowed=Map.of("CREATED",Set.of("DISPATCHING","CANCELLED"),"DISPATCHING",Set.of("DELIVERING","CANCELLED","ERROR"),"DELIVERING",Set.of("FINISHED","ERROR"),"ERROR",Set.of("DISPATCHING","CANCELLED"),"FINISHED",Set.of(),"CANCELLED",Set.of()); if(!allowed.getOrDefault(o.status(),Set.of()).contains(target)) conflict("Illegal order transition: "+o.status()+" -> "+target); if(database!=null){database.updateOrderStatus(id,target);reload();return order(id);} Models.Order next=new Models.Order(o.id(),o.orderNo(),o.userId(),o.addressId(),o.totalPrice(),target,o.createdAt(),o.addressSnapshot(),o.items()); orders.put(id,next); return next; }
-    public synchronized Models.Task dispatch(long orderId,long uavId) { uav(uavId); Models.Order order=order(orderId); if(!Set.of("CREATED","ERROR").contains(order.status())) conflict("Order cannot be dispatched"); Models.Task previous=tasks.values().stream().filter(task->task.orderId()==orderId).findFirst().orElse(null);if(database!=null){if(previous!=null&&!"FAILED".equals(previous.taskStatus()))conflict("Order already has an active task");long[] id={previous==null?0:previous.id()};transact(()->{database.updateOrderStatus(orderId,"DISPATCHING");if(previous!=null)database.resetTask(previous.id(),uavId);else id[0]=database.insertTask(orderId,uavId);});reload();return required(tasks.get(id[0]),"Task not found");}transitionOrder(orderId,"DISPATCHING");if(previous!=null){Models.Task reset=new Models.Task(previous.id(),orderId,uavId,"WAITING",null,null,null);tasks.put(previous.id(),reset);return reset;}long id=taskIds.incrementAndGet(); Models.Task task=new Models.Task(id,orderId,uavId,"WAITING",null,null,null); tasks.put(id,task); return task; }
-    public synchronized Models.Order cancelOrder(long id) { Models.Order order=order(id);if(!Set.of("CREATED","DISPATCHING","ERROR").contains(order.status()))conflict("Order cannot be cancelled");Models.Task active=tasks.values().stream().filter(task->task.orderId()==id&&Set.of("WAITING","FLYING").contains(task.taskStatus())).findFirst().orElse(null);if(database!=null){transact(()->{if(active!=null)database.terminateTask(active.id(),"ORDER_CANCELLED");database.updateOrderStatus(id,"CANCELLED");});reload();return order(id);}if(active!=null)tasks.put(active.id(),new Models.Task(active.id(),active.orderId(),active.uavId(),"FAILED",active.startTime(),now(),"ORDER_CANCELLED"));Models.Order cancelled=new Models.Order(order.id(),order.orderNo(),order.userId(),order.addressId(),order.totalPrice(),"CANCELLED",order.createdAt(),order.addressSnapshot(),order.items());orders.put(id,cancelled);return cancelled; }
+    public synchronized Models.Order createOrder(long userId,long addressId,List<OrderLine> lines) {
+        return createOrder(userId, addressId, lines, null, null);
+    }
+
+    /**
+     * Creates an order and reserves its stock. Both data modes take the same path through
+     * {@link FulfilmentService}; the only difference is which adapter is underneath.
+     */
+    public synchronized Models.Order createOrder(long userId, long addressId, List<OrderLine> lines,
+                                                 Long operatorId, String idempotencyKey) {
+        List<com.zhiyuan.fulfilment.OrderLine> domainLines = lines == null ? List.of()
+            : lines.stream().map(line -> new com.zhiyuan.fulfilment.OrderLine(line.goodsId(), line.count())).toList();
+        Models.Order created = fulfilment.createOrder(userId, addressId, domainLines, operatorId, idempotencyKey);
+        refreshFulfilment();
+        return created;
+    }
+    /**
+     * Direct status edit, kept for the operations console. Dispatch, cancel and task-driven
+     * transitions go through their own methods so the inventory side-effects come with them.
+     */
+    /**
+     * Cancels an order. Other transitions are not available as a bare status edit: every
+     * one of them carries an inventory consequence, so they must go through
+     * {@link #dispatch} or {@link #transitionTask} where the ledger is written with them
+     * (ADR 0001). A status-only write would leave stock and status disagreeing.
+     */
+    public synchronized Models.Order transitionOrder(long id, String target) {
+        return transitionOrder(id, target, null);
+    }
+
+    public synchronized Models.Order transitionOrder(long id, String target, Long operatorId) {
+        order(id);
+        if ("CANCELLED".equals(target)) return cancelOrder(id, operatorId);
+        throw new FulfilmentConflictException(
+            "Order status '" + target + "' is reached through dispatch or a task transition,"
+                + " not through a direct status edit");
+    }
+    public synchronized Models.Task dispatch(long orderId,long uavId) {
+        return dispatch(orderId, uavId, null);
+    }
+
+    public synchronized Models.Task dispatch(long orderId, long uavId, Long operatorId) {
+        uav(uavId);
+        Models.Task task = fulfilment.dispatchOrder(orderId, uavId, operatorId);
+        refreshFulfilment();
+        return task;
+    }
+    public synchronized Models.Order cancelOrder(long id) {
+        return cancelOrder(id, null);
+    }
+
+    /** Cancels the order, releases every reservation it still holds and fails an active task. */
+    public synchronized Models.Order cancelOrder(long id, Long operatorId) {
+        Models.Order cancelled = fulfilment.cancelOrder(id, operatorId, "cancelled by operator");
+        refreshFulfilment();
+        return cancelled;
+    }
     public synchronized List<Models.Task> tasks(String status) { return sorted(tasks).stream().filter(t->status==null||status.isBlank()||t.taskStatus().equals(status)).toList(); }
     public synchronized Models.Task transitionTask(long id,String target) { return transitionTask(id,target,null); }
-    public synchronized Models.Task transitionTask(long id,String target,String failureReason) { Models.Task t=required(tasks.get(id),"Task not found"); Map<String,Set<String>> allowed=Map.of("WAITING",Set.of("FLYING","FAILED"),"FLYING",Set.of("ARRIVED","FAILED"),"ARRIVED",Set.of(),"FAILED",Set.of()); if(!allowed.getOrDefault(t.taskStatus(),Set.of()).contains(target)) conflict("Illegal task transition: "+t.taskStatus()+" -> "+target); OffsetDateTime start="FLYING".equals(target)?now():t.startTime(); OffsetDateTime end=Set.of("ARRIVED","FAILED").contains(target)?now():t.endTime();String orderTarget="FLYING".equals(target)?"DELIVERING":"ARRIVED".equals(target)?"FINISHED":"ERROR";String event="FLYING".equals(target)?"配送任务起飞":"ARRIVED".equals(target)?"配送任务到达":null;String detail="任务 TSK-"+String.format("%04d",t.id());Models.Uav current=uav(t.uavId());if(database!=null){transact(()->{database.updateTask(id,target,start,end,"FAILED".equals(target)?failureReason:null);database.updateOrderStatus(t.orderId(),orderTarget);if(event!=null)database.insertFlightLog(t.uavId(),event,detail,current.latitude(),current.longitude());});reload();return required(tasks.get(id),"Task not found");} Models.Task next=new Models.Task(t.id(),t.orderId(),t.uavId(),target,start,end,"FAILED".equals(target)?failureReason:null); tasks.put(id,next); transitionOrder(t.orderId(),orderTarget);if(event!=null)recordMemoryFlightLog(current,event,detail);return next; }
+    public synchronized Models.Task transitionTask(long id,String target,String failureReason) {
+        return transitionTask(id, target, failureReason, null);
+    }
+
+    /**
+     * Moves the task, mirrors the order status and settles the reservation: ARRIVED consumes
+     * it, FAILED deliberately keeps it so the order can be re-dispatched (ADR 0001).
+     */
+    public synchronized Models.Task transitionTask(long id, String target, String failureReason,
+                                                   Long operatorId) {
+        Models.Task before = fulfilmentTask(id);
+        Models.Uav current = uav(before.uavId());
+        Models.Task task = fulfilment.transitionTask(id, target, failureReason, operatorId);
+        refreshFulfilment();
+
+        String event = "FLYING".equals(target) ? "配送任务起飞" : "ARRIVED".equals(target) ? "配送任务到达" : null;
+        if (event != null) {
+            String detail = "任务 TSK-" + String.format("%04d", id);
+            if (database != null) database.insertFlightLog(current.id(), event, detail, current.latitude(), current.longitude());
+            else recordMemoryFlightLog(current, event, detail);
+        }
+        return task;
+    }
+
+    private Models.Task fulfilmentTask(long id) {
+        return required(tasks.get(id), "Task not found");
+    }
+
+    /** The immutable movement history behind an order's current stock position. */
+    public synchronized List<Models.LedgerEntry> inventoryLedger(long orderId) {
+        order(orderId);
+        return fulfilment.ledger(orderId);
+    }
+
+    /** Who moved this order between states, when, and why. */
+    public synchronized List<Models.OrderStatusChange> orderHistory(long orderId) {
+        order(orderId);
+        return fulfilment.history(orderId);
+    }
     public synchronized List<Models.Pod> pods() { return sorted(pods); }
     public synchronized Models.Pod updatePod(long id,String doorStatus,Long uavId) { Models.Pod p=required(pods.get(id),"Pod not found"); if(!Set.of("OPEN","CLOSED","ERROR").contains(doorStatus)) throw new IllegalArgumentException("Invalid door status"); if(uavId!=null) uav(uavId); if(database!=null){database.updatePod(id,doorStatus,uavId);reload();return required(pods.get(id),"Pod not found");} Models.Pod next=new Models.Pod(p.id(),p.name(),p.region(),doorStatus,uavId); pods.put(id,next); return next; }
     public synchronized List<Models.Binding> bindings() { return sorted(bindings); }
@@ -157,6 +355,11 @@ public class PlatformStore {
 
     private Models.Alert alert(long id) { return required(alerts.get(id), "Alert not found"); }
 
+    private static Models.User withAddresses(Models.User user, List<Models.Address> addresses) {
+        return new Models.User(user.id(), user.username(), user.phone(), user.createdAt(), addresses,
+            user.enabled());
+    }
+
     private Models.FlightLog recordMemoryFlightLog(Models.Uav uav,String event,String detail) {long id=flightLogs.keySet().stream().mapToLong(Long::longValue).max().orElse(0)+1;Models.FlightLog log=new Models.FlightLog(id,uav.id(),event,detail,uav.latitude(),uav.longitude(),now());flightLogs.put(id,log);auditLogs.put("F-"+id,new Models.AuditLog("F-"+id,"FLIGHT",uav.id(),event,detail,"RECORDED","UAV",null,null,log.occurredAt()));return log;}
 
     private void trimCommandCache() {if(commands.size()<=500)return;commands.values().stream().filter(command->Set.of("ACKNOWLEDGED","FAILED","TIMEOUT").contains(command.status())).min(Comparator.comparing(Models.ControlCommand::createdAt).thenComparing(Models.ControlCommand::id)).ifPresent(oldest->commands.remove(oldest.id()));}
@@ -164,6 +367,23 @@ public class PlatformStore {
     private void transact(Runnable action) {
         if (transactions == null) action.run();
         else transactions.executeWithoutResult(status -> action.run());
+    }
+
+    /**
+     * Reloads just the device snapshots.
+     *
+     * <p>Telemetry is written straight to the database by the ingest path rather than
+     * through this store, so without this the cached fleet would go stale the moment a
+     * device moved — the REST list and the SSE stream would then disagree.
+     */
+    public synchronized void refreshDevices() {
+        if (database == null) return;
+        replace(uavs, database.uavs(), Models.Uav::id);
+    }
+
+    /** Device roster for the simulator, keyed by the business code rather than the row id. */
+    public synchronized List<Models.Uav> devices() {
+        return sorted(uavs);
     }
 
     private synchronized void reload() {

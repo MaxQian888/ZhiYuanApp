@@ -12,6 +12,54 @@ spring:
     default-property-inclusion: non_null
 server:
   port: ${SERVER_PORT:8080}
+logging:
+  structured:
+    format:
+      # Empty means the human-readable console format. Production sets ecs (or logstash/gelf)
+      # so the trace id and every MDC entry arrive as fields rather than as a string a log
+      # pipeline has to guess at with a regex.
+      console: ${LOG_FORMAT:}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # /actuator/health itself is administrator-only (see SecurityConfig), so it can carry
+      # the full picture. The two probe groups below are the public ones and are pinned to a
+      # bare status: a load balancer needs UP or DOWN, not our queue depths.
+      show-details: always
+      # DEGRADED means "serving, but a subsystem is impaired" — see PlatformObservability for
+      # why that must answer 200. Anything returning 503 is taken out of the load balancer,
+      # and a broker outage would otherwise take the console down with the device link.
+      status:
+        order: DOWN,OUT_OF_SERVICE,DEGRADED,UP,UNKNOWN
+        http-mapping:
+          DEGRADED: 200
+  health:
+    probes:
+      enabled: true
+    group:
+      # Readiness answers one question: can this process serve a request. Subsystem trouble
+      # is reported in /actuator/health, not here.
+      readiness:
+        include: readinessState,db
+        show-details: never
+      liveness:
+        include: livenessState
+        show-details: never
+  otlp:
+    metrics:
+      export:
+        # Off until an endpoint exists, so a development run does not spend its time
+        # retrying a connection to nowhere.
+        enabled: ${OTLP_METRICS_ENABLED:false}
+        url: ${OTLP_ENDPOINT:http://localhost:4318/v1/metrics}
+        step: ${OTLP_STEP:60s}
+  metrics:
+    tags:
+      application: zhiyuan-server
 zhiyuan:
   jwt-secret: ${JWT_SECRET:development-only-change-this-secret-32-bytes}
   access-minutes: 15
@@ -20,3 +68,31 @@ zhiyuan:
   simulator-enabled: ${UAV_SIMULATOR_ENABLED:true}
   version: ${APP_VERSION:0.1.0}
   update-url: ${UPDATE_MANIFEST_URL:}
+  realtime:
+    # One bus serves every operator; these bound what a misbehaving client can cost.
+    max-subscribers: ${REALTIME_MAX_SUBSCRIBERS:200}
+    subscriber-queue: ${REALTIME_SUBSCRIBER_QUEUE:64}
+    replay-buffer: ${REALTIME_REPLAY_BUFFER:512}
+    outbox-poll-millis: ${REALTIME_OUTBOX_POLL_MILLIS:200}
+    resync-seconds: ${REALTIME_RESYNC_SECONDS:30}
+    outbox-retention-hours: ${REALTIME_OUTBOX_RETENTION_HOURS:24}
+  telemetry:
+    archive-queue: ${TELEMETRY_ARCHIVE_QUEUE:20000}
+    # When true, an unreachable archive is reported as a degraded subsystem rather than
+    # being ignored. Production sets this; the simulator does not.
+    archive-required: ${TELEMETRY_ARCHIVE_REQUIRED:false}
+  clickhouse:
+    # Setting a URL swaps the in-memory archive for the real one. Unset in development.
+    url: ${CLICKHOUSE_URL:}
+    database: ${CLICKHOUSE_DATABASE:zhiyuan}
+    username: ${CLICKHOUSE_USERNAME:default}
+    password: ${CLICKHOUSE_PASSWORD:}
+    timeout-seconds: ${CLICKHOUSE_TIMEOUT_SECONDS:10}
+  mqtt:
+    # Setting a URL swaps the simulator for the real device link.
+    url: ${MQTT_URL:}
+    client-id-prefix: ${MQTT_CLIENT_ID_PREFIX:zhiyuan}
+    username: ${MQTT_USERNAME:}
+    password: ${MQTT_PASSWORD:}
+    share-group: ${MQTT_SHARE_GROUP:zhiyuan-ingest}
+    topic-root: ${MQTT_TOPIC_ROOT:zhiyuan/v1}
