@@ -1,4 +1,5 @@
-import { createAmapCsp, forwardedBuildArgs, httpsOrigin } from "./build-tauri-amap.mjs"
+import { createAmapCsp, httpsOrigin } from "./build-tauri-amap.mjs"
+import { forwardedBuildArgs } from "./tauri-build-utils.mjs"
 import { readFileSync } from "node:fs"
 
 const baseCsp = (

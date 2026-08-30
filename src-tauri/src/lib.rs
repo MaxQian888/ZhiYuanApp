@@ -53,6 +53,7 @@ pub fn run() {
         .manage(commands::PendingSingleInstanceLaunches::default())
         .invoke_handler(tauri::generate_handler![
             commands::platform_info,
+            commands::desktop_update_channel,
             commands::take_pending_single_instance_launches,
             commands::acknowledge_single_instance_launch
         ])

@@ -1,34 +1,10 @@
-import { spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { addCspSources, httpsOrigin, runTauriBuild } from "./tauri-build-utils.mjs"
 
-export function httpsOrigin(value, name) {
-  let url
-  try {
-    url = new URL(value)
-  } catch {
-    throw new Error(`${name} must be an absolute HTTPS URL`)
-  }
-  if (url.protocol !== "https:" || url.username || url.password) {
-    throw new Error(`${name} must be an HTTPS URL without embedded credentials`)
-  }
-  return url.origin
-}
-
-function appendSources(directives, name, sources) {
-  const existing = directives.get(name)
-  if (!existing) throw new Error(`Base Tauri CSP is missing ${name}`)
-  directives.set(name, [...new Set([...existing, ...sources])])
-}
+export { httpsOrigin } from "./tauri-build-utils.mjs"
 
 export function createAmapCsp(baseCsp, { apiUrl, serviceHost }) {
-  const directives = new Map(
-    baseCsp
-      .split(";")
-      .map((directive) => directive.trim().split(/\s+/))
-      .filter(([name]) => Boolean(name))
-      .map(([name, ...sources]) => [name, sources])
-  )
   const connectOrigins = [
     "https://restapi.amap.com",
     "https://webapi.amap.com",
@@ -36,17 +12,11 @@ export function createAmapCsp(baseCsp, { apiUrl, serviceHost }) {
   ]
   if (apiUrl) connectOrigins.push(httpsOrigin(apiUrl, "NEXT_PUBLIC_API_URL"))
 
-  appendSources(directives, "script-src", ["https://webapi.amap.com"])
-  appendSources(directives, "img-src", ["https://*.amap.com", "https://*.autonavi.com"])
-  appendSources(directives, "connect-src", connectOrigins)
-
-  return [...directives]
-    .map(([name, sources]) => `${name}${sources.length ? ` ${sources.join(" ")}` : ""}`)
-    .join("; ")
-}
-
-export function forwardedBuildArgs(args) {
-  return args[0] === "--" ? args.slice(1) : args
+  return addCspSources(baseCsp, {
+    "script-src": ["https://webapi.amap.com"],
+    "img-src": ["https://*.amap.com", "https://*.autonavi.com"],
+    "connect-src": connectOrigins,
+  })
 }
 
 function build() {
@@ -66,14 +36,12 @@ function build() {
     serviceHost,
   })
   const overlay = JSON.stringify({ app: { security: { csp } } })
-  const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm"
-  const result = spawnSync(
-    pnpm,
-    ["exec", "tauri", "build", "--config", overlay, ...forwardedBuildArgs(process.argv.slice(2))],
-    { env: process.env, stdio: "inherit" }
-  )
-  if (result.error) throw result.error
-  process.exitCode = result.status ?? 1
+  runTauriBuild({
+    args: process.argv.slice(2),
+    env: process.env,
+    overlay: JSON.parse(overlay),
+    projectRoot: fileURLToPath(new URL("..", import.meta.url)),
+  })
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href

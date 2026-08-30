@@ -10,6 +10,7 @@ import {
   extractSingleInstanceRoute,
   getPlatformInfo,
   installAppUpdate,
+  desktopUpdateChannel,
   isTauri,
   listenForSecondInstance,
   minimizeAppWindow,
@@ -189,6 +190,13 @@ describe("lib/tauri", () => {
   })
 
   describe("updater", () => {
+    it("reads the update channel from persistent desktop state", async () => {
+      setTauriMarker()
+      mockedInvoke.mockResolvedValue("pilot")
+      await expect(desktopUpdateChannel()).resolves.toBe("pilot")
+      expect(mockedInvoke).toHaveBeenCalledWith("desktop_update_channel")
+    })
+
     it("does not claim the web build is up to date", async () => {
       await expect(checkForAppUpdate()).resolves.toEqual({
         available: false,
@@ -200,6 +208,7 @@ describe("lib/tauri", () => {
 
     it("downloads and installs an available desktop update", async () => {
       setTauriMarker()
+      mockedInvoke.mockResolvedValue("stable")
       const downloadAndInstall = jest.fn().mockResolvedValue(undefined)
       const close = jest.fn().mockResolvedValue(undefined)
       mockedCheck.mockResolvedValue({
@@ -214,6 +223,12 @@ describe("lib/tauri", () => {
         message: "Version 0.2.0 was installed. Restart the app to finish updating.",
       })
       expect(downloadAndInstall).toHaveBeenCalledTimes(1)
+      expect(mockedCheck).toHaveBeenCalledWith({
+        headers: { "X-ZhiYuan-Update-Channel": "stable" },
+      })
+      expect(downloadAndInstall).toHaveBeenCalledWith(expect.any(Function), {
+        headers: { "X-ZhiYuan-Update-Channel": "stable" },
+      })
       expect(close).toHaveBeenCalledTimes(1)
     })
 

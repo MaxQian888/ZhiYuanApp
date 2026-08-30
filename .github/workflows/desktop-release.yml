@@ -1,0 +1,254 @@
+name: Signed Desktop Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Update channel; stable is promoted, never built directly
+        required: true
+        type: choice
+        options: [internal, pilot]
+      commit:
+        description: Exact reviewed master commit; pilot must have a successful internal tag
+        required: true
+        type: string
+
+env:
+  RELEASE_CHANNEL: ${{ github.event_name == 'push' && 'internal' || inputs.channel }}
+  RELEASE_COMMIT: ${{ github.event_name == 'push' && github.sha || inputs.commit }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare static frontend
+    if: github.event_name != 'push' || vars.DESKTOP_RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: desktop-${{ github.event_name == 'push' && 'internal' || inputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+          fetch-depth: 0
+      - name: Verify immutable reviewed release commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          git fetch origin master --tags
+          git merge-base --is-ancestor HEAD origin/master
+          if [ "$RELEASE_CHANNEL" = pilot ]; then
+            test "$(git rev-parse "refs/tags/desktop-internal-$RELEASE_COMMIT^{commit}")" = \
+              "$RELEASE_COMMIT"
+          fi
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.30.3
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm version:check
+      - name: Build configured static frontend
+        env:
+          NEXT_PUBLIC_API_MODE: remote
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_AMAP_KEY: ${{ vars.NEXT_PUBLIC_AMAP_KEY }}
+          NEXT_PUBLIC_AMAP_SERVICE_HOST: ${{ vars.NEXT_PUBLIC_AMAP_SERVICE_HOST }}
+          NEXT_PUBLIC_ASR_PROVIDER: ${{ vars.NEXT_PUBLIC_ASR_PROVIDER }}
+        run: pnpm build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-static-frontend
+          path: out/
+          retention-days: 1
+          compression-level: 0
+
+  build:
+    name: Signed ${{ github.event_name == 'push' && 'internal' || inputs.channel }} (${{ matrix.target }})
+    needs: prepare
+    environment: desktop-${{ github.event_name == 'push' && 'internal' || inputs.channel }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            updateTarget: windows-x86_64
+            bundles: msi,nsis
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            updateTarget: darwin-x86_64
+            bundles: dmg
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            updateTarget: darwin-aarch64
+            bundles: dmg
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.30.3
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: desktop-${{ matrix.target }}
+          cache-on-failure: true
+
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-static-frontend
+          path: out/
+
+      - name: Require complete formal signing configuration
+        env:
+          UPDATE_BASE_URL: ${{ vars.UPDATE_BASE_URL }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          AZURE_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          AZURE_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          AZURE_ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: node scripts/desktop-release.mjs check-signing-env
+
+      - name: Install Azure Artifact Signing client
+        if: runner.os == 'Windows'
+        run: cargo install artifact-signing-cli --version 0.11.0 --locked
+
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          test -n "$APPLE_CERTIFICATE"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Build signed updater artifacts
+        env:
+          DESKTOP_RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          DESKTOP_FRONTEND_PREBUILT: "true"
+          UPDATE_BASE_URL: ${{ vars.UPDATE_BASE_URL }}
+          NEXT_PUBLIC_API_MODE: remote
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_AMAP_KEY: ${{ vars.NEXT_PUBLIC_AMAP_KEY }}
+          NEXT_PUBLIC_AMAP_SERVICE_HOST: ${{ vars.NEXT_PUBLIC_AMAP_SERVICE_HOST }}
+          NEXT_PUBLIC_ASR_PROVIDER: ${{ vars.NEXT_PUBLIC_ASR_PROVIDER }}
+          ASR_PUBLIC_WEBSOCKET_URL: ${{ vars.ASR_PUBLIC_WEBSOCKET_URL }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          AZURE_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          AZURE_ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          pnpm tauri:build:release -- --target ${{ matrix.target }}
+          --bundles ${{ matrix.bundles }}
+
+      - name: Verify Windows signatures and updater payloads
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/target/${{ matrix.target }}/release/bundle"
+          $files = Get-ChildItem $bundle -Recurse -Include *.exe,*.msi
+          if (-not $files) { throw "No Windows installers were built" }
+          foreach ($file in $files) {
+            if ((Get-AuthenticodeSignature $file.FullName).Status -ne "Valid") {
+              throw "Invalid Authenticode signature: $($file.FullName)"
+            }
+          }
+          if (-not (Get-ChildItem $bundle -Recurse -Filter *.exe.sig)) {
+            throw "Missing NSIS updater signature"
+          }
+          if (-not (Get-ChildItem $bundle -Recurse -Filter *.msi.sig)) {
+            throw "Missing MSI updater signature"
+          }
+
+      - name: Verify macOS Developer ID signature, notarization, and updater payload
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' -print -quit)
+          dmg=$(find "$bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)
+          test -n "$app" && test -n "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
+          find "$bundle/macos" -maxdepth 1 -name '*.app.tar.gz' -print -quit | grep -q .
+          find "$bundle/macos" -maxdepth 1 -name '*.app.tar.gz.sig' -print -quit | grep -q .
+
+      - name: Upload signed installer and updater signature
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ env.RELEASE_CHANNEL }}-${{ matrix.updateTarget }}-signed
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.sig
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_CHANNEL == 'internal' && 7 || 30 }}
+          compression-level: 0
+
+  record-internal:
+    name: Record verified internal commit
+    if: github.event_name == 'push' || inputs.channel == 'internal'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Record immutable internal verification tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh api --method POST repos/${{ github.repository }}/git/refs
+          -f ref="refs/tags/desktop-internal-${RELEASE_COMMIT}"
+          -f sha="${RELEASE_COMMIT}"

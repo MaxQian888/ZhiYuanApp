@@ -3,4 +3,3 @@ export function createAmapCsp(
   options: { apiUrl?: string; serviceHost: string }
 ): string
 export function httpsOrigin(value: string, name: string): string
-export function forwardedBuildArgs(args: string[]): string[]

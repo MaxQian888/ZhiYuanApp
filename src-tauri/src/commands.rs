@@ -1,5 +1,6 @@
 use serde::Serialize;
-use std::sync::Mutex;
+use std::{fs, sync::Mutex};
+use tauri::Manager;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +51,35 @@ pub fn platform_info() -> PlatformInfo {
     }
 }
 
+fn valid_update_channel(value: &str) -> Option<&str> {
+    matches!(value, "internal" | "pilot" | "stable").then_some(value)
+}
+
+#[tauri::command]
+pub fn desktop_update_channel(app: tauri::AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    let channel_file = data_dir.join("update-channel");
+    if let Ok(stored) = fs::read_to_string(&channel_file) {
+        if let Some(channel) = valid_update_channel(stored.trim()) {
+            return Ok(channel.to_owned());
+        }
+    }
+    let requested = std::env::args()
+        .find_map(|argument| {
+            argument
+                .strip_prefix("--update-channel=")
+                .map(str::to_owned)
+        })
+        .and_then(|channel| valid_update_channel(&channel).map(str::to_owned))
+        .unwrap_or_else(|| "stable".to_owned());
+    fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    fs::write(channel_file, requested.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(requested)
+}
+
 #[tauri::command]
 pub fn take_pending_single_instance_launches(
     state: tauri::State<'_, PendingSingleInstanceLaunches>,
@@ -75,6 +105,14 @@ mod tests {
         assert_eq!(info.platform, std::env::consts::OS);
         assert_eq!(info.architecture, std::env::consts::ARCH);
         assert_eq!(info.app_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn update_channel_is_fail_closed_to_the_known_release_lanes() {
+        assert_eq!(valid_update_channel("internal"), Some("internal"));
+        assert_eq!(valid_update_channel("pilot"), Some("pilot"));
+        assert_eq!(valid_update_channel("stable"), Some("stable"));
+        assert_eq!(valid_update_channel("nightly"), None);
     }
 
     #[test]

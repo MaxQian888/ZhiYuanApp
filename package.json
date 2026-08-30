@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
+    "version:check": "node scripts/desktop-release.mjs check-version",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -30,6 +31,8 @@
     "server:verify": "mvn -f server/pom.xml verify",
     "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri:build:amap": "node scripts/build-tauri-amap.mjs",
+    "tauri:build:release": "node scripts/desktop-release.mjs build",
+    "update:manifest": "node scripts/desktop-release.mjs manifest",
     "tauri:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"
   },
   "dependencies": {

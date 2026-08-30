@@ -130,6 +130,10 @@ Builds cross-platform desktop applications for:
 - **Windows** (x64): MSI and NSIS installers
 - **macOS** (x64 and ARM64): DMG and .app bundles
 
+This workflow is portability validation. Its artifact names end in `-unsigned` and must not
+be distributed to operators. Formal Windows/macOS artifacts come only from the protected
+`desktop-release.yml` workflow; see `src-tauri/UPDATER.md`.
+
 **Platform-Specific Requirements:**
 
 #### Linux (Ubuntu)
@@ -145,25 +149,12 @@ No additional setup required. System dependencies are installed automatically:
 
 #### Windows
 
-**Optional Code Signing:**
-
-To enable code signing, add these secrets:
-
-- `WINDOWS_CERTIFICATE` - Base64-encoded PFX certificate
-- `WINDOWS_CERTIFICATE_PASSWORD` - Certificate password
-
-**How to prepare certificate:**
-
-```powershell
-# Convert PFX to base64
-$bytes = [System.IO.File]::ReadAllBytes("certificate.pfx")
-$base64 = [System.Convert]::ToBase64String($bytes)
-$base64 | Out-File certificate.txt
-```
+Formal releases use Azure Artifact Signing. The certificate private key remains in Azure's
+HSM; CI receives only Entra credentials plus the account, profile, and endpoint identifiers.
 
 #### macOS
 
-**Optional Code Signing and Notarization:**
+Formal releases use Developer ID signing plus notarization and stapling:
 
 To enable code signing and notarization, add these secrets:
 
@@ -189,32 +180,13 @@ base64 -i certificate.p12 -o certificate.txt
 3. Go to Security > App-Specific Passwords
 4. Generate a new password
 
-**Tauri Configuration:**
-
-Update `src-tauri/tauri.conf.json` for code signing:
-
-```json
-{
-  "bundle": {
-    "macOS": {
-      "signingIdentity": "Developer ID Application: Your Name (TEAM_ID)",
-      "entitlements": "path/to/entitlements.plist"
-    },
-    "windows": {
-      "certificateThumbprint": null,
-      "digestAlgorithm": "sha256",
-      "timestampUrl": "http://timestamp.digicert.com"
-    }
-  }
-}
-```
-
 ### 6. Create Release
 
 **Runs on:** Tags starting with `v` (e.g., `v1.0.0`)  
 **Duration:** ~1-2 minutes
 
-Automatically creates a GitHub release with all built artifacts when you push a version tag.
+Creates a metadata-only draft after verifying the tag exactly matches the canonical version.
+Unsigned CI installers are never attached.
 
 **How to Create a Release:**
 
@@ -227,7 +199,6 @@ git push origin v1.0.0
 The release will be created as a **draft** with:
 
 - Auto-generated release notes
-- All platform-specific installers attached
 - Changelog based on commits since last tag
 
 **Review and publish the draft release manually** after verifying the artifacts.
@@ -280,10 +251,12 @@ All jobs upload artifacts that are retained for 7-30 days:
 
 - `CODECOV_TOKEN`
 
-### For Windows Code Signing (Optional)
+### For Azure Artifact Signing
 
-- `WINDOWS_CERTIFICATE`
-- `WINDOWS_CERTIFICATE_PASSWORD`
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_TENANT_ID`
+- Environment variables listed in `src-tauri/UPDATER.md`
 
 ### For macOS Code Signing (Optional)
 

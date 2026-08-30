@@ -185,6 +185,15 @@ export type UpdateCheckResult = {
   message: string
 }
 
+export async function desktopUpdateChannel(): Promise<string> {
+  if (!isTauri()) return "stable"
+  return invoke<string>("desktop_update_channel")
+}
+
+async function updateOptions() {
+  return { headers: { "X-ZhiYuan-Update-Channel": await desktopUpdateChannel() } }
+}
+
 export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
   if (!isTauri())
     return {
@@ -194,7 +203,7 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     }
   try {
     const { check } = await import("@tauri-apps/plugin-updater")
-    const update = await check()
+    const update = await check(await updateOptions())
     if (!update)
       return {
         available: false,
@@ -241,7 +250,8 @@ export async function installAppUpdate(
   let update: Awaited<ReturnType<typeof import("@tauri-apps/plugin-updater").check>> = null
   try {
     const { check } = await import("@tauri-apps/plugin-updater")
-    update = await check()
+    const options = await updateOptions()
+    update = await check(options)
     if (!update) return { installed: false, message: "No update is currently available" }
     let downloadedBytes = 0
     let totalBytes: number | undefined
@@ -249,7 +259,7 @@ export async function installAppUpdate(
       if (event.event === "Started") totalBytes = event.data.contentLength
       if (event.event === "Progress") downloadedBytes += event.data.chunkLength
       onProgress?.(downloadedBytes, totalBytes)
-    })
+    }, options)
     return {
       installed: true,
       version: update.version,
