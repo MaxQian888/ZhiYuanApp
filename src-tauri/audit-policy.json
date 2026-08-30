@@ -1,0 +1,157 @@
+{
+  "reviewedAt": "2026-08-30",
+  "exceptions": [
+    {
+      "id": "RUSTSEC-2024-0413",
+      "package": "atk",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> atk",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0416",
+      "package": "atk-sys",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> atk -> atk-sys",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2025-0141",
+      "package": "bincode",
+      "dependencyPath": "zhiyuan-operations -> tauri-plugin-stronghold -> iota_stronghold -> bincode",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "tauri-plugin-stronghold pulls this transitively and does not expose a compatible maintained replacement."
+    },
+    {
+      "id": "RUSTSEC-2024-0412",
+      "package": "gdk",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> gdk",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0418",
+      "package": "gdk-sys",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> gdk -> gdk-sys",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0411",
+      "package": "gdkwayland-sys",
+      "dependencyPath": "zhiyuan-operations -> tauri -> wry -> gdkwayland-sys",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0417",
+      "package": "gdkx11",
+      "dependencyPath": "zhiyuan-operations -> tauri -> wry -> gdkx11",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0414",
+      "package": "gdkx11-sys",
+      "dependencyPath": "zhiyuan-operations -> tauri -> wry -> gdkx11 -> gdkx11-sys",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0415",
+      "package": "gtk",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0420",
+      "package": "gtk-sys",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> gtk-sys",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0419",
+      "package": "gtk3-macros",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> gtk3-macros",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2024-0436",
+      "package": "paste",
+      "dependencyPath": "zhiyuan-operations -> tauri-plugin-stronghold -> iota_stronghold -> stronghold_engine -> paste",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "tauri-plugin-stronghold pulls this transitively and does not expose a compatible maintained replacement."
+    },
+    {
+      "id": "RUSTSEC-2024-0370",
+      "package": "proc-macro-error",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> glib -> glib-macros -> proc-macro-error",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses archived GTK3 bindings transitively; Linux remains build-validation only while upstream migration is tracked."
+    },
+    {
+      "id": "RUSTSEC-2025-0081",
+      "package": "unic-char-property",
+      "dependencyPath": "zhiyuan-operations -> tauri -> tauri-utils -> urlpattern -> unic-char-property",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri urlpattern pulls the unmaintained unic family transitively; no compatible upstream release removes it yet."
+    },
+    {
+      "id": "RUSTSEC-2025-0075",
+      "package": "unic-char-range",
+      "dependencyPath": "zhiyuan-operations -> tauri -> tauri-utils -> urlpattern -> unic-char-range",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri urlpattern pulls the unmaintained unic family transitively; no compatible upstream release removes it yet."
+    },
+    {
+      "id": "RUSTSEC-2025-0080",
+      "package": "unic-common",
+      "dependencyPath": "zhiyuan-operations -> tauri -> tauri-utils -> urlpattern -> unic-ucd-ident -> unic-ucd-version -> unic-common",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri urlpattern pulls the unmaintained unic family transitively; no compatible upstream release removes it yet."
+    },
+    {
+      "id": "RUSTSEC-2025-0100",
+      "package": "unic-ucd-ident",
+      "dependencyPath": "zhiyuan-operations -> tauri -> tauri-utils -> urlpattern -> unic-ucd-ident",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri urlpattern pulls the unmaintained unic family transitively; no compatible upstream release removes it yet."
+    },
+    {
+      "id": "RUSTSEC-2025-0098",
+      "package": "unic-ucd-version",
+      "dependencyPath": "zhiyuan-operations -> tauri -> tauri-utils -> urlpattern -> unic-ucd-ident -> unic-ucd-version",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri urlpattern pulls the unmaintained unic family transitively; no compatible upstream release removes it yet."
+    },
+    {
+      "id": "RUSTSEC-2024-0429",
+      "package": "glib",
+      "dependencyPath": "zhiyuan-operations -> tauri -> gtk -> glib",
+      "owner": "desktop-maintainers",
+      "expiresAt": "2026-11-28",
+      "reason": "Tauri Linux uses the GTK3 stack transitively; glib 0.20 is not available without an upstream runtime migration. Linux remains build-validation only."
+    }
+  ]
+}

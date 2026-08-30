@@ -2,10 +2,12 @@ package com.zhiyuan.config;
 
 import com.zhiyuan.device.CommandDispatcher;
 import com.zhiyuan.device.DeviceRegistry;
+import com.zhiyuan.device.DeviceIngestRepository;
 import com.zhiyuan.device.MqttUavAdapter;
 import com.zhiyuan.device.TelemetryIngestService;
 import com.zhiyuan.device.UavAdapter;
 import com.zhiyuan.realtime.PlatformEventBus;
+import com.zhiyuan.realtime.OutboxPublisher;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
@@ -14,6 +16,9 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
+
+import java.time.Clock;
 
 /**
  * What this instance reports about itself.
@@ -105,6 +110,21 @@ public class PlatformObservability {
         };
     }
 
+    @Bean
+    HealthIndicator outboxHealthIndicator(DeviceIngestRepository repository, Clock clock,
+        @Value("${zhiyuan.realtime.outbox-degraded-seconds:60}") long degradedSeconds) {
+        return () -> {
+            DeviceIngestRepository.OutboxStats stats = repository.outboxStats(clock.instant());
+            Health.Builder health = Health.up()
+                .withDetail("pending", stats.pending())
+                .withDetail("retrying", stats.retrying())
+                .withDetail("oldestPendingSeconds", stats.oldestPendingSeconds());
+            return stats.oldestPendingSeconds() > degradedSeconds
+                ? health.status(DEGRADED).withDetail("reason", "Outbox delivery delayed").build()
+                : health.build();
+        };
+    }
+
     /**
      * Binds the counters the platform already keeps to the metrics registry.
      *
@@ -113,7 +133,9 @@ public class PlatformObservability {
      */
     @Bean
     MeterBinder platformMetrics(TelemetryIngestService ingest, PlatformEventBus bus,
-                                CommandDispatcher dispatcher, DeviceRegistry devices) {
+                                CommandDispatcher dispatcher, DeviceRegistry devices,
+                                DeviceIngestRepository outbox, OutboxPublisher publisher,
+                                Clock clock) {
         // A MeterBinder rather than a bean that registers in its constructor: binders run
         // after the registry's common tags have been applied, so every meter here carries
         // the application tag instead of racing the customizer for it.
@@ -128,6 +150,14 @@ public class PlatformObservability {
             gauge(registry, "zhiyuan.realtime.subscribers.dropped", bus, PlatformEventBus::droppedSubscriberCount);
             gauge(registry, "zhiyuan.commands.pending", dispatcher, CommandDispatcher::pendingCount);
             gauge(registry, "zhiyuan.devices.known", devices, DeviceRegistry::size);
+            gauge(registry, "zhiyuan.outbox.pending", outbox,
+                source -> source.outboxStats(clock.instant()).pending());
+            gauge(registry, "zhiyuan.outbox.retrying", outbox,
+                source -> source.outboxStats(clock.instant()).retrying());
+            gauge(registry, "zhiyuan.outbox.oldest.seconds", outbox,
+                source -> source.outboxStats(clock.instant()).oldestPendingSeconds());
+            gauge(registry, "zhiyuan.outbox.published", publisher, OutboxPublisher::publishedCount);
+            gauge(registry, "zhiyuan.outbox.failures", publisher, OutboxPublisher::failureCount);
         };
     }
 

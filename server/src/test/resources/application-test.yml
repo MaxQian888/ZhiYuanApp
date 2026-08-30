@@ -10,11 +10,20 @@ spring:
     driver-class-name: org.h2.Driver
   flyway:
     locations: classpath:db/migration,classpath:db/dev
+logging:
+  structured:
+    format:
+      # A developer's ambient LOG_FORMAT must never change whether the test context starts.
+      console:
 zhiyuan:
   jwt-secret: test-only-secret-that-is-at-least-32-bytes
   access-minutes: 15
   refresh-days: 14
   cors-origins: http://localhost:3000
   simulator-enabled: true
+  realtime:
+    # Scheduled work makes failures race unrelated tests. Reliability tests invoke drain
+    # explicitly, so any exception fails the owning test instead of becoming log noise.
+    publisher-enabled: false
   version: 0.1.0-test
   update-url: ""

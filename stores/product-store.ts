@@ -65,17 +65,6 @@ function consumeLine(goods: Goods, order: Order | undefined): Goods {
   return { ...goods, reservedStock: Math.max(0, goods.reservedStock - line.count) }
 }
 
-/**
- * A per-attempt key so a retried create returns the first result instead of duplicating
- * the order. `crypto.randomUUID` is unavailable in some embedded webviews, hence the
- * fallback.
- */
-function newIdempotencyKey(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID()
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
-}
 const remoteMode = isRemoteApi
 interface ProductState {
   locale: Locale
@@ -113,7 +102,8 @@ interface ProductState {
     uavId: number,
     type: CommandType,
     source: "MANUAL" | "VOICE",
-    transcript?: string
+    transcript?: string,
+    idempotencyKey?: string
   ) => Promise<string>
   acknowledgeAlert: (id: number) => Promise<void>
   resolveAlert: (id: number) => Promise<void>
@@ -138,7 +128,8 @@ interface ProductState {
   createOrder: (
     userId: number,
     addressId: number,
-    items: { goodsId: number; count: number }[]
+    items: { goodsId: number; count: number }[],
+    idempotencyKey?: string
   ) => Promise<void>
   transitionTask: (id: number, status: TaskStatus, failureReason?: string) => Promise<boolean>
   bindDevice: (uavId: number) => Promise<void>
@@ -212,9 +203,10 @@ export const useProductStore = create<ProductState>((set, get) => ({
     }
     set({ staff: { ...current, ...patch } })
   },
-  sendCommand: async (uavId, type, source, transcript) => {
+  sendCommand: async (uavId, type, source, transcript, idempotencyKey) => {
     if (remoteMode) {
-      const result = await api.command(uavId, { type, source, transcript })
+      if (!idempotencyKey) throw new Error("Remote commands require an idempotency key")
+      const result = await api.command(uavId, { type, source, transcript }, idempotencyKey)
       const command: ControlCommand = {
         id: result.commandId,
         uavId,
@@ -491,10 +483,11 @@ export const useProductStore = create<ProductState>((set, get) => ({
     }))
     return true
   },
-  createOrder: async (userId, addressId, items) => {
+  createOrder: async (userId, addressId, items, idempotencyKey) => {
     if (remoteMode) {
-      // The key makes a retried POST return the original order instead of a second one.
-      const order = await api.createOrder(userId, addressId, items, newIdempotencyKey())
+      // The view owns the intent lifetime; minting here would turn a retry into a new order.
+      if (!idempotencyKey) throw new Error("Remote orders require an idempotency key")
+      const order = await api.createOrder(userId, addressId, items, idempotencyKey)
       set((state) => ({
         orders: [order, ...state.orders],
         goods: state.goods.map((goods) => reserveLine(goods, items)),

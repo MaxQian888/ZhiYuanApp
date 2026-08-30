@@ -9,8 +9,22 @@ package com.zhiyuan.device;
  */
 public interface CommandJournal {
 
-    /** The command has been created and accepted for dispatch, but not yet sent. */
-    void recordQueued(DeviceMessages.Command command, long uavId, String transcript);
+    record Reservation(boolean created, String commandId,
+                       DeviceMessages.DispatchReceipt receipt) {}
+
+    record Recovery(String commandId, String type, String source, java.time.Instant expiresAt) {}
+
+    /** Atomically reserves an idempotency key and records the queued command. */
+    Reservation reserve(DeviceMessages.Command command, long uavId, String transcript,
+                        String requestFingerprint, String idempotencyKey);
+
+    /** Persists the transport receipt used by future idempotent replays. */
+    void recordDispatch(String commandId, DeviceMessages.DispatchReceipt receipt);
+
+    /** Non-terminal commands whose deadlines must be restored after a process restart. */
+    default java.util.List<Recovery> recoverable() {
+        return java.util.List.of();
+    }
 
     /** A non-terminal move: {@code SENT}, or a terminal {@code FAILED} / {@code TIMEOUT}. */
     void recordStatus(String commandId, String status);

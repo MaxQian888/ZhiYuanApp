@@ -41,3 +41,76 @@ test("explicit logout stays logged out when server revocation is unavailable", a
   await page.goto("/")
   await expect(page.getByRole("heading", { name: /登录|Sign in/ })).toBeVisible()
 })
+
+test("the refresh session restores API access after the in-memory token is lost", async ({
+  page,
+}) => {
+  await login(page)
+
+  // A full reload clears the module-scoped access token. The HttpOnly refresh cookie must
+  // recover the session before protected remote data can render again.
+  await page.reload()
+  await expect(page.locator("main.product-page")).toBeVisible()
+  await page.goto("/settings")
+  await expect(page.locator("#profile")).toBeVisible()
+})
+
+test("browser CORS preflight and repeated order submissions preserve idempotency", async ({
+  page,
+}) => {
+  await page.goto("/login")
+  const preflight = page.waitForRequest(
+    (request) => request.method() === "OPTIONS" && request.url().endsWith("/api/v1/orders")
+  )
+
+  const result = await page.evaluate(async () => {
+    const loginResponse = await fetch("http://localhost:8080/api/v1/auth/login", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: "admin123", client: "web" }),
+    })
+    const loginPayload = await loginResponse.json()
+    const accessToken = loginPayload.data.accessToken as string
+    const key = crypto.randomUUID()
+    const body = JSON.stringify({ userId: 1, addressId: 1, items: [{ goodsId: 1, count: 1 }] })
+    const submit = (payload: string) =>
+      fetch("http://localhost:8080/api/v1/orders", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": key,
+        },
+        body: payload,
+      })
+
+    const first = await submit(body)
+    const firstPayload = await first.json()
+    const replay = await submit(body)
+    const replayPayload = await replay.json()
+    const conflict = await submit(
+      JSON.stringify({ userId: 1, addressId: 1, items: [{ goodsId: 1, count: 2 }] })
+    )
+
+    return {
+      firstStatus: first.status,
+      replayStatus: replay.status,
+      conflictStatus: conflict.status,
+      firstOrderId: firstPayload.data.id,
+      replayOrderId: replayPayload.data.id,
+    }
+  })
+
+  const options = await preflight
+  expect(options.headers()["access-control-request-headers"]?.toLowerCase()).toContain(
+    "idempotency-key"
+  )
+  expect(result).toMatchObject({
+    firstStatus: 200,
+    replayStatus: 200,
+    conflictStatus: 409,
+  })
+  expect(result.replayOrderId).toBe(result.firstOrderId)
+})

@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -45,11 +46,16 @@ public class OutboxPublisher {
     private final DeviceIngestRepository repository;
     private final PlatformEventTransport transport;
     private final PlatformStore store;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
+    private final BackgroundFailureReporter backgroundFailures;
 
     private final long pollMillis;
     private final long resyncSeconds;
     private final Duration retention;
+    private final Duration lease;
+    private final Clock clock;
+    private final boolean enabled;
+    private final String claimToken = java.util.UUID.randomUUID().toString();
 
     private final AtomicLong published = new AtomicLong();
     private final AtomicLong failures = new AtomicLong();
@@ -62,20 +68,29 @@ public class OutboxPublisher {
         });
 
     public OutboxPublisher(DeviceIngestRepository repository, PlatformEventTransport transport,
-                           PlatformStore store,
+                           PlatformStore store, ObjectMapper objectMapper,
+                           BackgroundFailureReporter backgroundFailures, Clock clock,
                            @Value("${zhiyuan.realtime.outbox-poll-millis:200}") long pollMillis,
                            @Value("${zhiyuan.realtime.resync-seconds:30}") long resyncSeconds,
-                           @Value("${zhiyuan.realtime.outbox-retention-hours:24}") long retentionHours) {
+                           @Value("${zhiyuan.realtime.outbox-retention-hours:24}") long retentionHours,
+                           @Value("${zhiyuan.realtime.outbox-lease-seconds:30}") long leaseSeconds,
+                           @Value("${zhiyuan.realtime.publisher-enabled:false}") boolean enabled) {
         this.repository = repository;
         this.transport = transport;
         this.store = store;
+        this.objectMapper = objectMapper;
+        this.backgroundFailures = backgroundFailures;
+        this.clock = clock;
         this.pollMillis = pollMillis;
         this.resyncSeconds = resyncSeconds;
         this.retention = Duration.ofHours(retentionHours);
+        this.lease = Duration.ofSeconds(leaseSeconds);
+        this.enabled = enabled;
     }
 
     @PostConstruct
     public void start() {
+        if (!enabled) return;
         scheduler.scheduleWithFixedDelay(this::drainQuietly, pollMillis, pollMillis,
             TimeUnit.MILLISECONDS);
         scheduler.scheduleWithFixedDelay(this::resyncQuietly, resyncSeconds, resyncSeconds,
@@ -89,39 +104,60 @@ public class OutboxPublisher {
      * @return how many rows were published
      */
     public int drain() {
-        List<DeviceIngestRepository.OutboxRow> pending = repository.pendingOutbox(BATCH_SIZE);
+        List<DeviceIngestRepository.OutboxRow> pending = repository.claimOutbox(
+            claimToken, clock.instant(), lease, BATCH_SIZE);
         if (pending.isEmpty()) return 0;
 
-        Set<String> movedDevices = new LinkedHashSet<>();
-        boolean commandsChanged = false;
-        List<Long> handled = new ArrayList<>(pending.size());
+        List<DeviceIngestRepository.OutboxRow> telemetry = new ArrayList<>();
+        List<DeviceIngestRepository.OutboxRow> commandAcks = new ArrayList<>();
+        List<Long> publishedIds = new ArrayList<>(pending.size());
 
         for (DeviceIngestRepository.OutboxRow row : pending) {
             switch (row.eventType()) {
-                case "uav.telemetry" -> movedDevices.add(row.aggregateId());
-                case "uav.presence" -> {
-                    movedDevices.add(row.aggregateId());
+                case "uav.telemetry" -> telemetry.add(row);
+                case "uav.command-ack" -> commandAcks.add(row);
+                case "uav.presence" -> processGroup(List.of(row), () -> {
                     forward("presence", row);
-                }
-                case "uav.command-ack" -> commandsChanged = true;
-                default -> forward(row.eventType(), row);
+                    publishChangedDevices(Set.of(row.aggregateId()));
+                }, publishedIds);
+                default -> processGroup(List.of(row), () -> forward(row.eventType(), row),
+                    publishedIds);
             }
-            handled.add(row.id());
         }
 
-        if (!movedDevices.isEmpty()) {
-            // One query, one event, however many samples the batch contained.
-            store.refreshDevices();
-            List<?> changed = store.uavs("", "", "").stream()
-                .filter(uav -> movedDevices.contains(uav.code()))
-                .toList();
-            if (!changed.isEmpty()) publish("telemetry-delta", changed);
-        }
-        if (commandsChanged) publish("command-status", store.commands());
+        processGroup(telemetry, () -> publishChangedDevices(telemetry.stream()
+            .map(DeviceIngestRepository.OutboxRow::aggregateId)
+            .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new))), publishedIds);
+        processGroup(commandAcks, () -> publish("command-status", store.commands()), publishedIds);
 
-        repository.markPublished(handled);
-        published.addAndGet(handled.size());
-        return handled.size();
+        int acknowledged = repository.markPublished(claimToken, publishedIds);
+        published.addAndGet(acknowledged);
+        return acknowledged;
+    }
+
+    private void publishChangedDevices(Set<String> movedDevices) {
+        if (movedDevices.isEmpty()) return;
+        store.refreshDevices();
+        List<?> changed = store.uavs("", "", "").stream()
+            .filter(uav -> movedDevices.contains(uav.code()))
+            .toList();
+        if (changed.size() != movedDevices.size()) {
+            throw new IllegalStateException("Missing current device state for outbox delta");
+        }
+        publish("telemetry-delta", changed);
+    }
+
+    private void processGroup(List<DeviceIngestRepository.OutboxRow> rows, Runnable action,
+                              List<Long> publishedIds) {
+        if (rows.isEmpty()) return;
+        try {
+            action.run();
+            rows.stream().map(DeviceIngestRepository.OutboxRow::id).forEach(publishedIds::add);
+        } catch (RuntimeException failure) {
+            failures.incrementAndGet();
+            repository.markFailed(claimToken, rows, clock.instant());
+            log.warn("Failed to broadcast outbox group beginning at row {}", rows.get(0).id(), failure);
+        }
     }
 
     /**
@@ -148,21 +184,14 @@ public class OutboxPublisher {
     }
 
     private void forward(String eventType, DeviceIngestRepository.OutboxRow row) {
-        try {
-            transport.broadcast(eventType, row.aggregateId(), row.payload());
-        } catch (RuntimeException failure) {
-            failures.incrementAndGet();
-            repository.markAttempted(row.id());
-            log.warn("Failed to broadcast outbox row {}", row.id(), failure);
-        }
+        transport.broadcast(eventType, row.aggregateId(), row.payload());
     }
 
     private void publish(String eventType, Object payload) {
         try {
             transport.broadcast(eventType, eventType, objectMapper.writeValueAsString(payload));
         } catch (Exception failure) {
-            failures.incrementAndGet();
-            log.warn("Failed to broadcast {}", eventType, failure);
+            throw new IllegalStateException("Failed to broadcast " + eventType, failure);
         }
     }
 
@@ -171,6 +200,7 @@ public class OutboxPublisher {
             drain();
         } catch (RuntimeException failure) {
             failures.incrementAndGet();
+            backgroundFailures.report("outbox-drain", failure);
             log.warn("Outbox drain failed; will retry on the next poll", failure);
         }
     }
@@ -179,6 +209,7 @@ public class OutboxPublisher {
         try {
             resync();
         } catch (RuntimeException failure) {
+            backgroundFailures.report("outbox-resync", failure);
             log.warn("Realtime resync failed", failure);
         }
     }
@@ -188,6 +219,7 @@ public class OutboxPublisher {
             int removed = repository.prunePublished(Instant.now().minus(retention));
             if (removed > 0) log.info("Pruned {} published outbox rows", removed);
         } catch (RuntimeException failure) {
+            backgroundFailures.report("outbox-prune", failure);
             log.warn("Outbox prune failed", failure);
         }
     }

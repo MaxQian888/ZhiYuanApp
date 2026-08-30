@@ -42,6 +42,9 @@ jest.mock("@/lib/api/client", () => ({
     sessions: jest.fn(() => Promise.resolve([])),
     revokeSession: jest.fn(() => Promise.resolve(null)),
     changePassword: jest.fn(() => Promise.resolve(null)),
+    mfaStatus: jest.fn(() =>
+      Promise.resolve({ enabled: false, pendingEnrolment: false, remainingRecoveryCodes: 0 })
+    ),
     forgetAuthentication: jest.fn(() => Promise.resolve()),
     logout: jest.fn(() => Promise.resolve()),
     login: jest.fn(),
@@ -928,9 +931,10 @@ describe("SettingsView", () => {
     )
   })
 
-  it("hides the desktop window panel outside Tauri", () => {
+  it("hides the desktop window panel outside Tauri", async () => {
     renderView("settings")
     expect(screen.queryByText("桌面窗口")).toBeNull()
+    await waitFor(() => expect(mockedTauri.getPlatformInfo).toHaveBeenCalled())
   })
 
   it("offers window placement controls on the desktop", async () => {

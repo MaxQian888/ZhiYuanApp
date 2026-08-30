@@ -76,6 +76,17 @@ zhiyuan/v1/platform/events/{eventType}    平台 → 平台   QoS 1
 
 outbox 再发布规范化平台事件到 `zhiyuan/v1/platform/events/{eventType}`，这一条用**普通订阅**（不是共享），所有实例都收到，各自扇出给自己的 SSE 客户端。
 
+Outbox publisher 以 30 秒数据库租约领取最多 500 条，网络广播在领取事务提交后进行。失败组按 1、2、4、8、16、32、60 秒持久化退避，之后保持 60 秒；记录不会自动删除或进入死信。只有整组广播成功且 `claim_token` 仍匹配时才确认：telemetry 和 command ACK 各自批量合并，presence 按设备逐条成组，其余事件逐条成组。
+
+### Outbox 滚动发布
+
+`V8__outbox_leases.sql` 是可向后兼容的加法迁移，但新旧 publisher 不能混跑。生产发布必须分两步：
+
+1. 先应用迁移，以 `REALTIME_OUTBOX_PUBLISHER_ENABLED=false` 滚动替换所有实例；确认旧版本实例数为零。
+2. 再统一把 `REALTIME_OUTBOX_PUBLISHER_ENABLED` 切为 `true`。若回滚应用版本，先关闭 publisher，再回滚实例；不回滚迁移。
+
+最老 pending 超过 60 秒时 `/actuator/health` 的 outbox 组件为 `DEGRADED`，但 readiness 保持 `UP`，以便运维仍能访问控制台和诊断接口。
+
 ### 指令闸门
 
 只有设备 presence 在线**且**遥测新鲜（飞行态 ≤2s，地面态 ≤5s）才允许下发。离线或过期直接拒绝，**不排队** —— 一条延迟五分钟才送达的"返航"指令比拒绝更危险。

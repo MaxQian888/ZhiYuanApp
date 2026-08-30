@@ -364,6 +364,17 @@ describe("API boundary · authentication", () => {
   })
 })
 
+describe("API boundary · idempotent commands", () => {
+  it("sends the operator intent key with a command", async () => {
+    const fetchMock = mockFetch(ok({ commandId: "cmd-1", status: "QUEUED", adapter: "MQTT" }, 202))
+
+    await api.command(1, { type: "LAND", source: "MANUAL" }, "intent-123")
+
+    const headers = fetchMock.mock.calls[0][1]!.headers as Headers
+    expect(headers.get("Idempotency-Key")).toBe("intent-123")
+  })
+})
+
 describe("API boundary · staff administration", () => {
   const accountRow = { ...staffRow, id: 8, username: "night.ops", role: "manager", enabled: true }
 
@@ -743,6 +754,27 @@ describe("API boundary · customers, goods, orders and tasks", () => {
     await api.transitionTask(1, "FAILED", "强风")
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/api/v1/tasks/1/fail`)
     expect(fetchMock.mock.calls[0][1]!.body).toBe('{"reason":"强风"}')
+  })
+
+  it("loads a UAV track from the telemetry history endpoint", async () => {
+    const point = {
+      uavCode: "UAV-01",
+      observedAt: "2026-08-30T01:00:00Z",
+      status: "FLYING",
+      battery: 73,
+      latitude: 32.06,
+      longitude: 118.78,
+      altitude: 48.5,
+      speed: 12.3,
+    }
+    const fetchMock = mockFetch(ok([point]))
+
+    await expect(
+      api.telemetryHistory(1, "2026-08-30T00:00:00Z", "2026-08-30T02:00:00Z")
+    ).resolves.toEqual([point])
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${BASE}/api/v1/uavs/1/telemetry?from=2026-08-30T00%3A00%3A00Z&to=2026-08-30T02%3A00%3A00Z&resolution=raw`
+    )
   })
 
   it("reads the updater version descriptor", async () => {

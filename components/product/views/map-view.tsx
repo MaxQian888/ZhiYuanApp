@@ -28,16 +28,25 @@ export function MapView() {
   const [recentre, setRecentre] = useState<Coordinate | null>(null)
   const provider = useMemo(() => selectMapProvider(), [])
   const uav = store.uavs.find((item) => item.id === selected) ?? store.uavs[0]
-  const serverFlightLogs = useQuery({
-    queryKey: ["flight-logs", uav?.id],
-    queryFn: () => api.flightLogs(uav!.id),
+  const serverTelemetry = useQuery({
+    queryKey: ["telemetry-history", uav?.id],
+    queryFn: () => {
+      const to = new Date()
+      const from = new Date(to.getTime() - (24 * 60 * 60 * 1000 - 1_000))
+      return api.telemetryHistory(uav!.id, from.toISOString(), to.toISOString())
+    },
     enabled: isRemoteApi && Boolean(uav),
   })
-  const mapFlightLogs = isRemoteApi
-    ? (serverFlightLogs.data ?? [])
+  const coordinateHistory = isRemoteApi
+    ? (serverTelemetry.data ?? []).map((point) => ({
+        latitude: point.latitude,
+        longitude: point.longitude,
+        occurredAt: point.observedAt,
+        event: point.status,
+      }))
     : store.flightLogs.filter((item) => item.uavId === uav?.id)
   if (!uav) return <QueryLoading locale={store.locale} />
-  const coordinateLogs = mapFlightLogs
+  const coordinateLogs = coordinateHistory
     .filter(
       (item): item is typeof item & { latitude: number; longitude: number } =>
         item.latitude !== undefined && item.longitude !== undefined
@@ -111,19 +120,19 @@ export function MapView() {
             <div>
               <dt>{copy.track}</dt>
               <dd>
-                {isRemoteApi && serverFlightLogs.isPending ? (
+                {isRemoteApi && serverTelemetry.isPending ? (
                   <Spinner aria-label={store.locale === "zh-CN" ? "加载轨迹" : "Loading track"} />
-                ) : isRemoteApi && serverFlightLogs.isError ? (
+                ) : isRemoteApi && serverTelemetry.isError ? (
                   <Button
                     variant="link"
                     size="sm"
                     className="text-button"
-                    onClick={() => void serverFlightLogs.refetch()}
+                    onClick={() => void serverTelemetry.refetch()}
                   >
                     {store.locale === "zh-CN" ? "重试" : "Retry"}
                   </Button>
                 ) : (
-                  `${mapFlightLogs.length} ${store.locale === "zh-CN" ? "个事件点" : "events"}`
+                  `${coordinateHistory.length} ${store.locale === "zh-CN" ? "个轨迹点" : "points"}`
                 )}
               </dd>
             </div>

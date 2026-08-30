@@ -143,8 +143,7 @@ public class SqlFulfilmentStore implements FulfilmentStore {
         } catch (DuplicateKeyException raced) {
             // Two replays of the same request arrived together. The row that landed first
             // already carries the answer; the loser's work is rolled back by the caller.
-            throw new FulfilmentConflictException(
-                "Idempotency key '" + key + "' is being processed concurrently");
+            throw new IdempotencyInProgressException(key);
         }
     }
 

@@ -26,6 +26,7 @@
     "docs:build": "pnpm -F docs build",
     "docs:start": "pnpm -F docs start",
     "audit": "pnpm audit --audit-level=moderate",
+    "audit:rust": "node scripts/check-rust-advisories.mjs",
     "server:verify": "mvn -f server/pom.xml verify",
     "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"

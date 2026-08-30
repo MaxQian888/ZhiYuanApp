@@ -172,8 +172,33 @@ public class PlatformStore {
     public synchronized void saveCommand(Models.ControlCommand command) { saveCommand(command, 1); }
     public synchronized void saveCommand(Models.ControlCommand command,long operatorId) { if(database!=null)database.insertCommand(command,operatorId);commands.put(command.id(),command);trimCommandCache();if(database==null){String category="VOICE".equals(command.source())?"VOICE":"CONTROL";auditLogs.put("C-"+command.id(),new Models.AuditLog("C-"+command.id(),category,command.uavId(),command.type(),command.transcript()==null||command.transcript().isBlank()?command.status():command.transcript(),command.status(),command.source(),operatorId,"陈屿",command.createdAt()));} }
     public synchronized Models.ControlCommand command(String id) { return required(commands.get(id),"Command not found"); }
-    public synchronized Models.ControlCommand commandStatus(String id,String status) { Models.ControlCommand c=command(id);if(database!=null)database.updateCommandStatus(id,status);Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),status,c.source(),c.transcript(),c.createdAt());commands.put(id,next);Models.AuditLog log=auditLogs.get("C-"+id);if(log!=null)auditLogs.put(log.id(),new Models.AuditLog(log.id(),log.category(),log.uavId(),log.title(),log.detail(),status,log.source(),log.operatorId(),log.operatorName(),log.occurredAt()));trimCommandCache();return next; }
-    public synchronized Models.ControlCommand acknowledgeCommand(String id,String event,String detail) {Models.ControlCommand c=command(id);Models.Uav current=uav(c.uavId());if(database!=null)transact(()->{database.updateCommandStatus(id,"ACKNOWLEDGED");database.insertFlightLog(c.uavId(),event,detail,current.latitude(),current.longitude());});Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),"ACKNOWLEDGED",c.source(),c.transcript(),c.createdAt());commands.put(id,next);if(database==null)recordMemoryFlightLog(current,event,detail);Models.AuditLog log=auditLogs.get("C-"+id);if(log!=null)auditLogs.put(log.id(),new Models.AuditLog(log.id(),log.category(),log.uavId(),log.title(),log.detail(),"ACKNOWLEDGED",log.source(),log.operatorId(),log.operatorName(),log.occurredAt()));trimCommandCache();return next;}
+    public synchronized Models.ControlCommand commandStatus(String id,String status) { Models.ControlCommand c=command(id);if(database!=null&&!database.updateOpenCommandStatus(id,status))return c;return cacheCommandStatus(id,status); }
+    public synchronized Models.ControlCommand acknowledgeCommand(String id,String event,String detail) {Models.ControlCommand c=command(id);Models.Uav current=uav(c.uavId());if(database!=null&&!database.acknowledgeCommand(id,c.uavId(),event,detail,current.latitude(),current.longitude()))return c;Models.ControlCommand next=new Models.ControlCommand(c.id(),c.uavId(),c.type(),"ACKNOWLEDGED",c.source(),c.transcript(),c.createdAt());commands.put(id,next);if(database==null)recordMemoryFlightLog(current,event,detail);Models.AuditLog log=auditLogs.get("C-"+id);if(log!=null)auditLogs.put(log.id(),new Models.AuditLog(log.id(),log.category(),log.uavId(),log.title(),log.detail(),"ACKNOWLEDGED",log.source(),log.operatorId(),log.operatorName(),log.occurredAt()));trimCommandCache();return next;}
+
+    /** Updates the command read model after the SQL command journal writes transactionally. */
+    public synchronized void cacheCommand(Models.ControlCommand command) {
+        commands.put(command.id(), command);
+        trimCommandCache();
+    }
+
+    public synchronized Models.ControlCommand cacheCommandStatus(String id, String status) {
+        Models.ControlCommand c = command(id);
+        Models.ControlCommand next = new Models.ControlCommand(c.id(), c.uavId(), c.type(), status,
+            c.source(), c.transcript(), c.createdAt());
+        commands.put(id, next);
+        Models.AuditLog log = auditLogs.get("C-" + id);
+        if (log != null) auditLogs.put(log.id(), new Models.AuditLog(log.id(), log.category(),
+            log.uavId(), log.title(), log.detail(), status, log.source(), log.operatorId(),
+            log.operatorName(), log.occurredAt()));
+        trimCommandCache();
+        return next;
+    }
+
+    /** Dispatch completion must not overwrite an ACK/TIMEOUT that won the race. */
+    public synchronized Models.ControlCommand cacheDispatchStatus(String id, String status) {
+        Models.ControlCommand current = command(id);
+        return "QUEUED".equals(current.status()) ? cacheCommandStatus(id, status) : current;
+    }
     public synchronized List<Models.ControlCommand> commands() { return commands.values().stream().sorted(Comparator.comparing(Models.ControlCommand::createdAt).reversed()).toList(); }
     public synchronized List<Models.User> users(String query) { String q=query==null?"":query.trim(); return sorted(users).stream().filter(u -> q.isBlank() || u.username().contains(q) || u.phone().contains(q)).toList(); }
     public synchronized Models.User addUser(String username,String phone) { requirePhone(phone); if(users.values().stream().anyMatch(u->u.phone().equals(phone))) conflict("Phone already exists"); if(database!=null){long id=database.insertUser(username,phone);reload();return required(users.get(id),"User not found");} long id=userIds.incrementAndGet(); Models.User u=new Models.User(id,username,phone,now(),List.of(),true); users.put(id,u); memoryFulfilment.putUser(u); return u; }

@@ -65,6 +65,11 @@
       <artifactId>java-jwt</artifactId>
       <version>4.5.0</version>
     </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-jsr310</artifactId>
+      <version>2.20.1</version>
+    </dependency>
     <!--
       Eclipse Paho MQTT v5 client. Used directly rather than through Spring Integration
       MQTT: the only thing we need from the broker is publish/subscribe with manual

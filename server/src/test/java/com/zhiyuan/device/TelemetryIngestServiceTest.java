@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * recorded rather than silently swallowed, and the snapshot and the outbox row must land
  * together or not at all.
  */
-@SpringBootTest
+@SpringBootTest(properties = "zhiyuan.realtime.publisher-enabled=false")
 class TelemetryIngestServiceTest {
 
     @Autowired TelemetryIngestService ingest;
@@ -139,6 +139,8 @@ class TelemetryIngestServiceTest {
             UUID.randomUUID().toString(), "UAV-06", 1, Instant.now(), false));
 
         assertThat(registry.readiness("UAV-06")).isEqualTo(DeviceRegistry.Readiness.OFFLINE);
+        assertThat(jdbc.queryForObject("SELECT status FROM uavs WHERE code = 'UAV-06'",
+            String.class)).isEqualTo("OFFLINE");
         assertThat(countOutbox()).isGreaterThan(outboxBefore);
     }
 
@@ -155,6 +157,7 @@ class TelemetryIngestServiceTest {
 
     @Test
     void drainingTheOutboxCoalescesManySamplesIntoOnePublishedBatch() {
+        jdbc.update("DELETE FROM outbox WHERE published_at IS NULL");
         long sequence = nextSequence("UAV-02");
         for (int index = 0; index < 20; index++) {
             ingest.onTelemetry(sample("UAV-02", sequence + index, 40 + (index % 5)));
@@ -207,6 +210,44 @@ class TelemetryIngestServiceTest {
         assertThat(jdbc.queryForObject(
             "SELECT COUNT(*) FROM outbox WHERE aggregate_id = 'RECENT'", Integer.class))
             .isEqualTo(1);
+    }
+
+    @Test
+    void leasesAClaimedRowToOneInstanceAndPersistsItsRetryDelay() {
+        jdbc.update("DELETE FROM outbox WHERE published_at IS NULL");
+        String aggregateId = "LEASE-" + UUID.randomUUID();
+        jdbc.update("INSERT INTO outbox (event_type, aggregate_id, payload) VALUES (?, ?, '{}')",
+            "test.lease", aggregateId);
+        Instant now = Instant.now().plusSeconds(1);
+
+        List<DeviceIngestRepository.OutboxRow> first = repository.claimOutbox(
+            "instance-one", now, java.time.Duration.ofSeconds(30), 1000).stream()
+            .filter(row -> aggregateId.equals(row.aggregateId()))
+            .toList();
+        List<DeviceIngestRepository.OutboxRow> second = repository.claimOutbox(
+            "instance-two", now, java.time.Duration.ofSeconds(30), 1000).stream()
+            .filter(row -> aggregateId.equals(row.aggregateId()))
+            .toList();
+
+        assertThat(first).hasSize(1);
+        assertThat(second).isEmpty();
+
+        repository.markFailed("instance-one", first, now);
+        assertThat(jdbc.queryForObject(
+            "SELECT attempts FROM outbox WHERE aggregate_id = ?", Integer.class, aggregateId))
+            .isEqualTo(1);
+        assertThat(repository.claimOutbox("instance-two", now, java.time.Duration.ofSeconds(30), 1000))
+            .noneMatch(row -> aggregateId.equals(row.aggregateId()));
+        assertThat(repository.claimOutbox("instance-two", now.plusSeconds(1),
+            java.time.Duration.ofSeconds(30), 1000))
+            .anyMatch(row -> aggregateId.equals(row.aggregateId()));
+    }
+
+    @Test
+    void outboxRetryBackoffCapsAtSixtySeconds() {
+        assertThat(java.util.stream.IntStream.range(0, 9)
+            .mapToLong(DeviceIngestRepository::retryDelaySeconds)
+            .toArray()).containsExactly(1, 2, 4, 8, 16, 32, 60, 60, 60);
     }
 
     private long countOutbox() {

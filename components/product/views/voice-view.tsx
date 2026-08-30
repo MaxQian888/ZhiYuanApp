@@ -8,6 +8,7 @@ import { Field, PageHeader, Section, StatusPill } from "@/components/product/pri
 import { executeAction, formatDate } from "@/components/product/view-kit"
 import { parseVoiceCommand } from "@/lib/domain"
 import { useCopy } from "@/lib/i18n-product"
+import { IdempotencyIntent } from "@/lib/idempotency"
 import { selectAsrAdapter, type AsrFailure, type AsrSession } from "@/lib/voice"
 import { useProductStore } from "@/stores/product-store"
 
@@ -21,9 +22,15 @@ export function VoiceView() {
   const [parsed, setParsed] = useState<ReturnType<typeof parseVoiceCommand>>(null)
   const adapter = useMemo(() => selectAsrAdapter(), [])
   const session = useRef<AsrSession | null>(null)
-  // Read once: whether a recogniser exists cannot change while the view is mounted, and
-  // calling it during render on every keystroke would probe the runtime for nothing.
-  const [supported] = useState(() => adapter.available())
+  const commandIntent = useRef(new IdempotencyIntent()).current
+  // Keep the server and the browser's first render identical. Runtime capability is only
+  // knowable after hydration; probing it during render produced a recoverable mismatch.
+  const [supported, setSupported] = useState(false)
+
+  useEffect(() => {
+    const probe = window.setTimeout(() => setSupported(adapter.available()), 0)
+    return () => window.clearTimeout(probe)
+  }, [adapter])
 
   // Abandoning the session on unmount is what releases the microphone. Without it, navigating
   // away mid-recording leaves the browser's recording indicator lit and the capture running.
@@ -132,10 +139,23 @@ export function VoiceView() {
                 className="button button-primary"
                 onClick={() =>
                   void executeAction(
-                    () => store.sendCommand(parsed.uavId, parsed.type, "VOICE", parsed.transcript),
+                    () =>
+                      store.sendCommand(
+                        parsed.uavId,
+                        parsed.type,
+                        "VOICE",
+                        parsed.transcript,
+                        commandIntent.keyFor(
+                          JSON.stringify([parsed.uavId, parsed.type, "VOICE", parsed.transcript])
+                        )
+                      ),
                     store.locale,
                     copy.commandSent
-                  ).then((result) => result.ok && setParsed(null))
+                  ).then((result) => {
+                    if (!result.ok) return
+                    commandIntent.clear()
+                    setParsed(null)
+                  })
                 }
               >
                 {copy.confirm}

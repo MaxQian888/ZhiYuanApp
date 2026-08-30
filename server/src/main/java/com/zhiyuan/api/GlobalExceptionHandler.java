@@ -4,6 +4,7 @@ import com.zhiyuan.device.CommandDispatcher;
 import com.zhiyuan.fulfilment.FulfilmentConflictException;
 import com.zhiyuan.telemetry.TelemetryArchive;
 import com.zhiyuan.fulfilment.IdempotencyConflictException;
+import com.zhiyuan.fulfilment.IdempotencyInProgressException;
 import com.zhiyuan.security.LoginThrottle;
 import com.zhiyuan.security.MfaService;
 import jakarta.validation.ConstraintViolationException;
@@ -64,6 +65,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IdempotencyConflictException.class)
     ResponseEntity<ApiResponse<Void>> idempotencyConflict(IdempotencyConflictException exception) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(ApiResponse.error(409, exception.getMessage()));
+    }
+
+    @ExceptionHandler(IdempotencyInProgressException.class)
+    ResponseEntity<ApiResponse<Void>> idempotencyInProgress(
+        IdempotencyInProgressException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .header(org.springframework.http.HttpHeaders.RETRY_AFTER, "1")
             .body(ApiResponse.error(409, exception.getMessage()));
     }
 

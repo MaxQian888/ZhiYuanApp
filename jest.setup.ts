@@ -46,6 +46,25 @@ window.matchMedia ??= ((query: string) => ({
 
 process.env.NEXT_PUBLIC_API_MODE = "simulator"
 
+const allowedConsoleErrors = [/^Route error$/, /Not implemented: navigation/]
+let consoleError: jest.SpyInstance
+
+beforeEach(() => {
+  consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined)
+})
+
+afterEach(() => {
+  const unexpected = consoleError.mock.calls.filter(
+    (args) => !allowedConsoleErrors.some((pattern) => pattern.test(String(args[0])))
+  )
+  consoleError.mockRestore()
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Unexpected console.error:\n${unexpected.map((args) => args.map(String).join(" ")).join("\n")}`
+    )
+  }
+})
+
 type MockNextImageProps = React.ComponentPropsWithoutRef<"img"> & {
   priority?: boolean
   fill?: boolean

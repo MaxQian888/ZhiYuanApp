@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { Database, LocateFixed, MapPin, Plane, Radio, RotateCcw, Search, X } from "lucide-react"
 import Link from "next/link"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import {
   EmptyState,
   MetricStrip,
@@ -37,6 +37,7 @@ import { api } from "@/lib/api/client"
 import { type CommandType, filterUavs, type UavStatus } from "@/lib/domain"
 import { isRemoteApi } from "@/lib/env"
 import { useCopy } from "@/lib/i18n-product"
+import { IdempotencyIntent } from "@/lib/idempotency"
 import { useProductStore } from "@/stores/product-store"
 
 /**
@@ -76,6 +77,7 @@ function CommandDialogView({
   const uav = store.uavs.find((item) => item.id === uavId)
   const readiness = useReadiness(uavId)
   const [pending, setPending] = useState(false)
+  const commandIntent = useRef(new IdempotencyIntent()).current
   // Absent readiness data — simulator mode, or the check itself failing — must not block
   // control. Losing the ability to land a drone because a status endpoint is down is a worse
   // outcome than showing a button that the server may still refuse.
@@ -108,7 +110,14 @@ function CommandDialogView({
           </p>
         )}
         <DialogFooter>
-          <Button variant="outline" className="button button-secondary" onClick={onClose}>
+          <Button
+            variant="outline"
+            className="button button-secondary"
+            onClick={() => {
+              commandIntent.clear()
+              onClose()
+            }}
+          >
             {copy.cancel}
           </Button>
           <Button
@@ -118,12 +127,22 @@ function CommandDialogView({
             onClick={() => {
               setPending(true)
               void executeAction(
-                () => store.sendCommand(uavId, command, "MANUAL"),
+                () =>
+                  store.sendCommand(
+                    uavId,
+                    command,
+                    "MANUAL",
+                    undefined,
+                    commandIntent.keyFor(JSON.stringify([uavId, command, "MANUAL"]))
+                  ),
                 store.locale,
                 copy.commandSent
               ).then((result) => {
                 setPending(false)
-                if (result.ok) onClose()
+                if (result.ok) {
+                  commandIntent.clear()
+                  onClose()
+                }
               })
             }}
           >
@@ -147,6 +166,7 @@ export function UavDetailView() {
   const uav = store.uavs.find((item) => item.id === id) ?? store.uavs[0]
   const [command, setCommand] = useState<CommandType | null>(null)
   const [retryingCommandId, setRetryingCommandId] = useState<string | null>(null)
+  const retryIntent = useRef(new IdempotencyIntent()).current
   const readiness = useReadiness(uav?.id)
   const refused = readiness.data && !readiness.data.commandable ? readiness.data : null
   const commands = store.commands.filter((item) => item.uavId === uav?.id)
@@ -286,10 +306,19 @@ export function UavDetailView() {
                         setRetryingCommandId(item.id)
                         void executeAction(
                           () =>
-                            store.sendCommand(item.uavId, item.type, item.source, item.transcript),
+                            store.sendCommand(
+                              item.uavId,
+                              item.type,
+                              item.source,
+                              item.transcript,
+                              retryIntent.keyFor(item.id)
+                            ),
                           store.locale,
                           store.locale === "zh-CN" ? "重试指令已发送" : "Retry sent"
-                        ).then(() => setRetryingCommandId(null))
+                        ).then((result) => {
+                          if (result.ok) retryIntent.clear()
+                          setRetryingCommandId(null)
+                        })
                       }}
                     >
                       {retryingCommandId === item.id ? <Spinner /> : <RotateCcw />}

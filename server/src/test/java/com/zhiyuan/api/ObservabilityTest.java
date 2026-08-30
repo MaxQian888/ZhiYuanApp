@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -16,13 +17,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** What this instance tells a load balancer, a scraper and an operator about itself. */
-@SpringBootTest(properties = "management.endpoints.web.exposure.include=health,info,metrics")
+@SpringBootTest(properties = {
+    "management.endpoints.web.exposure.include=health,info,metrics",
+    "zhiyuan.realtime.publisher-enabled=false"
+})
 @AutoConfigureMockMvc
 class ObservabilityTest {
 
     @Autowired MockMvc mvc;
     @Autowired MeterRegistry registry;
     @Autowired com.zhiyuan.realtime.PlatformEventBus bus;
+    @Autowired JdbcTemplate jdbc;
 
     private String bearer;
 
@@ -62,7 +67,8 @@ class ObservabilityTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.components.deviceLink").exists())
             .andExpect(jsonPath("$.components.telemetryArchive").exists())
-            .andExpect(jsonPath("$.components.realtime").exists());
+            .andExpect(jsonPath("$.components.realtime").exists())
+            .andExpect(jsonPath("$.components.outbox").exists());
     }
 
     @Test
@@ -108,6 +114,11 @@ class ObservabilityTest {
         assertThat(registry.find("zhiyuan.realtime.subscribers").gauge()).isNotNull();
         assertThat(registry.find("zhiyuan.commands.pending").gauge()).isNotNull();
         assertThat(registry.find("zhiyuan.devices.known").gauge()).isNotNull();
+        assertThat(registry.find("zhiyuan.outbox.pending").gauge()).isNotNull();
+        assertThat(registry.find("zhiyuan.outbox.retrying").gauge()).isNotNull();
+        assertThat(registry.find("zhiyuan.outbox.oldest.seconds").gauge()).isNotNull();
+        assertThat(registry.find("zhiyuan.outbox.published").gauge()).isNotNull();
+        assertThat(registry.find("zhiyuan.outbox.failures").gauge()).isNotNull();
     }
 
     @Test
@@ -117,5 +128,19 @@ class ObservabilityTest {
         double before = registry.find("zhiyuan.realtime.subscribers").gauge().value();
 
         assertThat(before).isEqualTo(bus.subscriberCount());
+    }
+
+    @Test
+    void anOldOutboxBacklogDegradesTheSubsystemWithoutRemovingReadiness() throws Exception {
+        jdbc.update("INSERT INTO outbox (event_type, aggregate_id, payload, created_at)"
+            + " VALUES ('test.stuck', 'STUCK', '{}', DATEADD('SECOND', -120, CURRENT_TIMESTAMP))");
+
+        mvc.perform(get("/actuator/health").header("Authorization", bearer))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.components.outbox.status").value("DEGRADED"))
+            .andExpect(jsonPath("$.components.outbox.details.oldestPendingSeconds").isNumber());
+        mvc.perform(get("/actuator/health/readiness"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("UP"));
     }
 }

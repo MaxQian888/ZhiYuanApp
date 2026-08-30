@@ -631,13 +631,17 @@ describe("product store · remote mode", () => {
     const store = await loadRemoteStore(api)
     store.setState({ staff })
 
-    const id = await store.getState().sendCommand(2, "TAKE_OFF", "VOICE", "起飞")
+    const id = await store.getState().sendCommand(2, "TAKE_OFF", "VOICE", "起飞", "command-key")
     expect(id).toBe("srv-1")
-    expect(api.command).toHaveBeenCalledWith(2, {
-      type: "TAKE_OFF",
-      source: "VOICE",
-      transcript: "起飞",
-    })
+    expect(api.command).toHaveBeenCalledWith(
+      2,
+      {
+        type: "TAKE_OFF",
+        source: "VOICE",
+        transcript: "起飞",
+      },
+      "command-key"
+    )
     expect(store.getState().commands[0]).toMatchObject({ id: "srv-1", status: "QUEUED" })
     expect(store.getState().auditLogs[0]).toMatchObject({
       id: "C-srv-1",
@@ -755,18 +759,13 @@ describe("product store · remote mode", () => {
       ],
     })
 
-    await store.getState().createOrder(11, 21, [{ goodsId: 31, count: 2 }])
-    expect(api.createOrder).toHaveBeenCalledWith(
-      11,
-      21,
-      [{ goodsId: 31, count: 2 }],
-      expect.stringMatching(/.+/)
-    )
+    await store.getState().createOrder(11, 21, [{ goodsId: 31, count: 2 }], "order-key")
+    expect(api.createOrder).toHaveBeenCalledWith(11, 21, [{ goodsId: 31, count: 2 }], "order-key")
     expect(store.getState().orders[0].orderNo).toBe("ZY-2")
     expect(store.getState().goods[0]).toMatchObject({ stock: 7, reservedStock: 2 })
   })
 
-  it("sends a fresh idempotency key for each distinct create", async () => {
+  it("refuses to mint a new idempotency key inside a remote store action", async () => {
     const api = buildApi()
     const store = await loadRemoteStore(api)
     store.setState({
@@ -784,12 +783,10 @@ describe("product store · remote mode", () => {
       ],
     })
 
-    await store.getState().createOrder(11, 21, [{ goodsId: 31, count: 1 }])
-    await store.getState().createOrder(11, 21, [{ goodsId: 31, count: 1 }])
-
-    const [firstKey, secondKey] = api.createOrder.mock.calls.map((call) => call[3])
-    expect(firstKey).toEqual(expect.any(String))
-    expect(secondKey).not.toBe(firstKey)
+    await expect(store.getState().createOrder(11, 21, [{ goodsId: 31, count: 1 }])).rejects.toThrow(
+      "require an idempotency key"
+    )
+    expect(api.createOrder).not.toHaveBeenCalled()
   })
 
   it("cancels through the API and refuses illegal transitions before calling it", async () => {

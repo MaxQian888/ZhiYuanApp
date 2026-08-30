@@ -14,7 +14,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "DB_URL='jdbc:mysql://localhost:3306/zhiyuan?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai' DB_USERNAME=zhiyuan DB_PASSWORD=zhiyuan-dev mvn -f server/pom.xml spring-boot:run",
+        "SPRING_PROFILES_ACTIVE=development REALTIME_OUTBOX_PUBLISHER_ENABLED=true CORS_ORIGINS=http://localhost:3000 MQTT_URL=tcp://localhost:1883 CLICKHOUSE_URL=http://localhost:8123 CLICKHOUSE_USERNAME=zhiyuan CLICKHOUSE_PASSWORD=zhiyuan-dev DB_URL='jdbc:mysql://localhost:3306/zhiyuan?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai' DB_USERNAME=zhiyuan DB_PASSWORD=zhiyuan-dev mvn -f server/pom.xml spring-boot:run",
       url: "http://localhost:8080/api/v1/system/about",
       reuseExistingServer: false,
       timeout: 120_000,

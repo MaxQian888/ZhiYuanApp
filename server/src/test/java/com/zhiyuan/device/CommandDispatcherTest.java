@@ -185,6 +185,58 @@ class CommandDispatcherTest {
     }
 
     @Test
+    void replayingTheSameIntentDoesNotDispatchASecondPhysicalCommand() {
+        CommandDispatcher.Issued first = dispatcher.issue(
+            "UAV-01", 1L, "LAND", "VOICE", "无人机一号降落", 7L, "retry-key");
+        CommandDispatcher.Issued replay = dispatcher.issue(
+            "UAV-01", 1L, "LAND", "VOICE", "无人机一号降落", 7L, "retry-key");
+
+        assertThat(replay.commandId()).isEqualTo(first.commandId());
+        assertThat(adapter.dispatched).hasSize(1);
+    }
+
+    @Test
+    void restoresPendingCommandsBeforeAQueuedBrokerAcknowledgementCanArrive() {
+        dispatcher.stop();
+        String commandId = UUID.randomUUID().toString();
+        journal.recoveries.add(new CommandJournal.Recovery(commandId, "RETURN_HOME", "MANUAL",
+            NOW.plusSeconds(30)));
+        adapter.ackOnSubscribe = ack(commandId, "EXECUTED");
+
+        dispatcher = new CommandDispatcher(adapter, registry, journal, clock);
+        dispatcher.start();
+
+        assertThat(journal.events).containsExactly("ACKNOWLEDGED");
+        assertThat(journal.acknowledgedEvents).containsExactly("返航指令");
+        assertThat(dispatcher.pendingCount()).isZero();
+    }
+
+    @Test
+    void expiresPersistedCommandsThatWereAlreadyPastTheirDeadlineAtRestart() {
+        dispatcher.stop();
+        journal.recoveries.add(new CommandJournal.Recovery(UUID.randomUUID().toString(),
+            "LAND", "VOICE", NOW.minusSeconds(1)));
+
+        dispatcher = new CommandDispatcher(adapter, registry, journal, clock);
+        dispatcher.start();
+
+        assertThat(journal.events).containsExactly("TIMEOUT");
+        assertThat(dispatcher.pendingCount()).isZero();
+    }
+
+    @Test
+    void anAckThatWinsTheDispatchPersistenceRaceRemainsTerminal() {
+        journal.beforeRecordDispatch = commandId ->
+            dispatcher.onCommandAck(ack(commandId, "EXECUTED"));
+
+        CommandDispatcher.Issued issued = issue();
+
+        assertThat(issued.receipt().accepted()).isTrue();
+        assertThat(journal.events).containsExactly("QUEUED", "ACKNOWLEDGED");
+        assertThat(journal.acknowledgedEvents).hasSize(1);
+    }
+
+    @Test
     void withoutAKeyTheCommandIdIsUsedSoEveryCommandStillHasOne() {
         CommandDispatcher.Issued issued = issue();
         assertThat(adapter.dispatched).singleElement()
@@ -200,6 +252,7 @@ class CommandDispatcherTest {
     static final class CapturingAdapter implements UavAdapter {
         final List<DeviceMessages.Command> dispatched = new CopyOnWriteArrayList<>();
         private volatile String rejection;
+        private volatile DeviceMessages.CommandAck ackOnSubscribe;
 
         void rejectNext(String reason) {
             this.rejection = reason;
@@ -225,28 +278,62 @@ class CommandDispatcherTest {
 
         @Override
         public void subscribe(DeviceEventListener listener) {
-            // The test drives acknowledgements directly.
+            if (ackOnSubscribe != null) listener.onCommandAck(ackOnSubscribe);
         }
     }
 
     static final class RecordingJournal implements CommandJournal {
         final List<String> events = new CopyOnWriteArrayList<>();
         final List<String> acknowledgedEvents = new ArrayList<>();
+        final java.util.Map<String, Reservation> reservations = new java.util.concurrent.ConcurrentHashMap<>();
+        final java.util.Map<String, String> keysByCommand = new java.util.concurrent.ConcurrentHashMap<>();
+        final List<Recovery> recoveries = new CopyOnWriteArrayList<>();
+        final java.util.Set<String> terminalCommands = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        java.util.function.Consumer<String> beforeRecordDispatch = ignored -> {};
 
         @Override
-        public void recordQueued(DeviceMessages.Command command, long uavId, String transcript) {
+        public Reservation reserve(DeviceMessages.Command command, long uavId, String transcript,
+                                   String requestFingerprint, String idempotencyKey) {
+            if (idempotencyKey != null && reservations.containsKey(idempotencyKey)) {
+                Reservation existing = reservations.get(idempotencyKey);
+                return new Reservation(false, existing.commandId(), existing.receipt());
+            }
             events.add("QUEUED");
+            Reservation created = new Reservation(true, command.commandId(), null);
+            if (idempotencyKey != null) {
+                reservations.put(idempotencyKey, created);
+                keysByCommand.put(command.commandId(), idempotencyKey);
+            }
+            return created;
+        }
+
+        @Override
+        public void recordDispatch(String commandId, DeviceMessages.DispatchReceipt receipt) {
+            beforeRecordDispatch.accept(commandId);
+            if (terminalCommands.contains(commandId)) return;
+            events.add(receipt.accepted() ? "SENT" : "FAILED");
+            String key = keysByCommand.get(commandId);
+            if (key != null) reservations.put(key, new Reservation(true, commandId, receipt));
         }
 
         @Override
         public void recordStatus(String commandId, String status) {
             events.add(status);
+            if ("FAILED".equals(status) || "TIMEOUT".equals(status)) {
+                terminalCommands.add(commandId);
+            }
         }
 
         @Override
         public void recordAcknowledged(String commandId, String event, String detail) {
+            terminalCommands.add(commandId);
             events.add("ACKNOWLEDGED");
             acknowledgedEvents.add(event);
+        }
+
+        @Override
+        public List<Recovery> recoverable() {
+            return List.copyOf(recoveries);
         }
     }
 }

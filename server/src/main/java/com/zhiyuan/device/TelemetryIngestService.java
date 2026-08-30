@@ -128,9 +128,16 @@ public class TelemetryIngestService implements DeviceEventListener {
                 "schemaVersion=" + presence.schemaVersion());
             return;
         }
+        Boolean applied = transactions.execute(status -> {
+            if (!repository.applyPresence(presence)) return Boolean.FALSE;
+            repository.insertOutbox("uav.presence", presence.uavCode(), toJson(presence));
+            return Boolean.TRUE;
+        });
+        if (!Boolean.TRUE.equals(applied)) {
+            reject(presence.uavCode(), "presence", "UNKNOWN_UAV", "No matching device");
+            return;
+        }
         registry.recordPresence(presence);
-        transactions.executeWithoutResult(status ->
-            repository.insertOutbox("uav.presence", presence.uavCode(), toJson(presence)));
     }
 
     @Override

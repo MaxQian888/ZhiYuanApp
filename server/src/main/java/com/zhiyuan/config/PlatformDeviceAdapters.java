@@ -5,6 +5,7 @@ import com.zhiyuan.device.DeviceMessages;
 import com.zhiyuan.device.DeviceRoster;
 import com.zhiyuan.domain.Models;
 import com.zhiyuan.service.PlatformStore;
+import com.zhiyuan.persistence.PlatformDatabase;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -36,19 +37,45 @@ public class PlatformDeviceAdapters {
     }
 
     @Bean
-    public CommandJournal commandJournal(PlatformStore store) {
-        return new PlatformCommandJournal(store);
+    public CommandJournal commandJournal(PlatformStore store, PlatformDatabase database) {
+        return new PlatformCommandJournal(store, database);
     }
 
     /** Writes command lifecycle events into the platform's audit trail. */
-    record PlatformCommandJournal(PlatformStore store) implements CommandJournal {
+    record PlatformCommandJournal(PlatformStore store, PlatformDatabase database) implements CommandJournal {
+
+        private static final String SCOPE = "uav.commands";
 
         @Override
-        public void recordQueued(DeviceMessages.Command command, long uavId, String transcript) {
-            store.saveCommand(new Models.ControlCommand(command.commandId(), uavId, command.type(),
-                    "QUEUED", command.source(), transcript,
-                    command.issuedAt().atOffset(ZoneOffset.ofHours(8)).withNano(0)),
-                command.operatorId() == null ? 1 : command.operatorId());
+        public Reservation reserve(DeviceMessages.Command command, long uavId, String transcript,
+                                   String requestFingerprint, String idempotencyKey) {
+            Models.ControlCommand model = new Models.ControlCommand(command.commandId(), uavId,
+                command.type(), "QUEUED", command.source(), transcript,
+                command.issuedAt().atOffset(ZoneOffset.ofHours(8)).withNano(0));
+            PlatformDatabase.CommandReservation reserved = database.reserveCommand(model,
+                command.operatorId() == null ? 1 : command.operatorId(), command.expiresAt(), SCOPE,
+                idempotencyKey, requestFingerprint);
+            if (reserved.created()) store.cacheCommand(model);
+            DeviceMessages.DispatchReceipt receipt = reserved.accepted() == null ? null
+                : reserved.accepted()
+                    ? DeviceMessages.DispatchReceipt.accepted(reserved.commandId(), reserved.adapter(),
+                        java.time.Instant.now())
+                    : DeviceMessages.DispatchReceipt.rejected(reserved.commandId(), reserved.adapter(),
+                        java.time.Instant.now(), reserved.reason());
+            return new Reservation(reserved.created(), reserved.commandId(), receipt);
+        }
+
+        @Override
+        public void recordDispatch(String commandId, DeviceMessages.DispatchReceipt receipt) {
+            database.recordCommandDispatch(commandId, receipt.accepted(), receipt.adapter(), receipt.reason());
+            store.cacheDispatchStatus(commandId, receipt.accepted() ? "SENT" : "FAILED");
+        }
+
+        @Override
+        public java.util.List<Recovery> recoverable() {
+            return database.recoverableCommands().stream()
+                .map(item -> new Recovery(item.commandId(), item.type(), item.source(), item.expiresAt()))
+                .toList();
         }
 
         @Override

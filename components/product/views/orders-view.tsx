@@ -2,7 +2,7 @@
 
 import { Plus } from "lucide-react"
 import Link from "next/link"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import {
   Field,
   MetricStrip,
@@ -23,6 +23,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { useCopy } from "@/lib/i18n-product"
+import { IdempotencyIntent } from "@/lib/idempotency"
 import { useProductStore } from "@/stores/product-store"
 
 function OrderActions({ orderId }: { orderId: number }) {
@@ -77,6 +78,7 @@ function OrderActions({ orderId }: { orderId: number }) {
 export function OrdersView({ detail = false }: { detail?: boolean }) {
   const store = useProductStore()
   const copy = useCopy(store.locale)
+  const createIntent = useRef(new IdempotencyIntent()).current
   const id = useUrlId(store.orders[0]?.id ?? 1)
   const order = store.orders.find((item) => item.id === id) ?? store.orders[0]
   const [creating, setCreating] = useState(false)
@@ -186,7 +188,13 @@ export function OrdersView({ detail = false }: { detail?: boolean }) {
           ))}
         </div>
       </Section>
-      <Dialog open={creating} onOpenChange={setCreating}>
+      <Dialog
+        open={creating}
+        onOpenChange={(open) => {
+          if (!open) createIntent.clear()
+          setCreating(open)
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{store.locale === "zh-CN" ? "创建订单" : "Create order"}</DialogTitle>
@@ -259,7 +267,10 @@ export function OrdersView({ detail = false }: { detail?: boolean }) {
             <Button
               variant="outline"
               className="button button-secondary"
-              onClick={() => setCreating(false)}
+              onClick={() => {
+                createIntent.clear()
+                setCreating(false)
+              }}
             >
               {copy.cancel}
             </Button>
@@ -278,12 +289,19 @@ export function OrdersView({ detail = false }: { detail?: boolean }) {
                   .map(([goodsId, count]) => ({ goodsId: Number(goodsId), count }))
                 setSaving(true)
                 void executeAction(
-                  () => store.createOrder(userId, addressId, items),
+                  () =>
+                    store.createOrder(
+                      userId,
+                      addressId,
+                      items,
+                      createIntent.keyFor(JSON.stringify([userId, addressId, items]))
+                    ),
                   store.locale,
                   copy.save
                 ).then((result) => {
                   setSaving(false)
                   if (!result.ok) return
+                  createIntent.clear()
                   setCreating(false)
                   setQuantities({})
                 })

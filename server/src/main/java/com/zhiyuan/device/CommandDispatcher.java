@@ -59,7 +59,8 @@ public class CommandDispatcher implements DeviceEventListener {
         }
     }
 
-    private record Pending(DeviceMessages.Command command, ScheduledFuture<?> deadline) {}
+    private record Pending(String commandId, String type, String source,
+                           ScheduledFuture<?> deadline) {}
 
     private final UavAdapter adapter;
     private final DeviceRegistry registry;
@@ -96,6 +97,10 @@ public class CommandDispatcher implements DeviceEventListener {
 
     @PostConstruct
     public void start() {
+        journal.recoverable().forEach(recovery -> restore(recovery.commandId(), recovery.type(),
+            recovery.source(), recovery.expiresAt()));
+        // Restore before subscribing: a durable MQTT session may deliver a queued ACK as soon as
+        // the subscription becomes active, and that ACK must find its pending command.
         adapter.subscribe(this);
     }
 
@@ -122,20 +127,22 @@ public class CommandDispatcher implements DeviceEventListener {
             source, now, now.plus(COMMAND_DEADLINE),
             idempotencyKey == null ? commandId : idempotencyKey, operatorId);
 
-        journal.recordQueued(command, uavId, transcript);
+        CommandJournal.Reservation reservation = journal.reserve(command, uavId, transcript,
+            fingerprint(uavId, type, source, transcript, operatorId), idempotencyKey);
+        if (!reservation.created()) return new Issued(reservation.commandId(), reservation.receipt());
 
         DeviceMessages.DispatchReceipt receipt = adapter.dispatch(command);
         if (!receipt.accepted()) {
-            journal.recordStatus(commandId, "FAILED");
+            journal.recordDispatch(commandId, receipt);
             return new Issued(commandId, receipt);
         }
 
-        // Arm the deadline before reporting SENT, so a very fast failure cannot slip
-        // through the window between the two.
-        pending.put(commandId, new Pending(command,
+        // Arm the deadline before reporting SENT, so an acknowledgement that arrives while the
+        // dispatch outcome is being persisted still finds the command in memory.
+        pending.put(commandId, new Pending(commandId, type, source,
             deadlines.schedule(() -> expire(commandId), COMMAND_DEADLINE.toMillis(),
                 TimeUnit.MILLISECONDS)));
-        journal.recordStatus(commandId, "SENT");
+        journal.recordDispatch(commandId, receipt);
         return new Issued(commandId, receipt);
     }
 
@@ -158,8 +165,8 @@ public class CommandDispatcher implements DeviceEventListener {
         }
 
         if ("EXECUTED".equals(ack.result())) {
-            journal.recordAcknowledged(ack.commandId(), commandEvent(settled.command().type()),
-                settled.command().source() + " · " + ack.commandId());
+            journal.recordAcknowledged(ack.commandId(), commandEvent(settled.type()),
+                settled.source() + " · " + ack.commandId());
         } else {
             journal.recordStatus(ack.commandId(), "FAILED");
         }
@@ -179,6 +186,30 @@ public class CommandDispatcher implements DeviceEventListener {
     private void expire(String commandId) {
         if (pending.remove(commandId) == null) return;
         journal.recordStatus(commandId, "TIMEOUT");
+    }
+
+    private void restore(String commandId, String type, String source, Instant expiresAt) {
+        long remaining = Duration.between(clock.instant(), expiresAt).toMillis();
+        if (remaining <= 0) {
+            journal.recordStatus(commandId, "TIMEOUT");
+            return;
+        }
+        pending.put(commandId, new Pending(commandId, type, source,
+            deadlines.schedule(() -> expire(commandId), remaining, TimeUnit.MILLISECONDS)));
+    }
+
+    private static String fingerprint(long uavId, String type, String source, String transcript,
+                                      Long operatorId) {
+        String canonical = uavId + "\n" + type + "\n" + source + "\n"
+            + (transcript == null ? "" : transcript.trim()) + "\n"
+            + (operatorId == null ? 1 : operatorId);
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     public int pendingCount() {

@@ -8,12 +8,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
+import com.zhiyuan.fulfilment.IdempotencyConflictException;
+import com.zhiyuan.fulfilment.IdempotencyInProgressException;
 
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,6 +42,12 @@ public class PlatformDatabase {
         List<Models.Pod> pods,
         List<Models.Binding> bindings
     ) {}
+
+    public record CommandReservation(boolean created, String commandId, Boolean accepted,
+                                     String adapter, String reason) {}
+
+    public record RecoverableCommand(String commandId, String type, String source,
+                                     Instant expiresAt) {}
 
     public PlatformDatabase(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -200,8 +211,85 @@ public class PlatformDatabase {
             operatorId, timestamp(command.createdAt()), timestamp(command.createdAt()));
     }
 
+    @Transactional
+    public CommandReservation reserveCommand(Models.ControlCommand command, long operatorId,
+        Instant expiresAt, String scope, String idempotencyKey, String fingerprint) {
+        if (idempotencyKey != null) {
+            List<CommandReservation> existing = jdbc.query(
+                "SELECT i.request_fingerprint, c.id, c.dispatch_accepted, c.dispatch_adapter,"
+                    + " c.dispatch_reason FROM idempotency_records i JOIN control_commands c"
+                    + " ON c.id = i.result_ref WHERE i.scope = ? AND i.idempotency_key = ?",
+                (rs, row) -> {
+                    if (!fingerprint.equals(rs.getString("request_fingerprint"))) {
+                        throw new IdempotencyConflictException(scope, idempotencyKey);
+                    }
+                    Boolean accepted = rs.getObject("dispatch_accepted") == null
+                        ? null : rs.getBoolean("dispatch_accepted");
+                    return new CommandReservation(false, rs.getString("id"), accepted,
+                        rs.getString("dispatch_adapter"), rs.getString("dispatch_reason"));
+                }, scope, idempotencyKey);
+            if (!existing.isEmpty()) {
+                CommandReservation replay = existing.get(0);
+                if (replay.accepted() == null) throw new IdempotencyInProgressException(idempotencyKey);
+                return replay;
+            }
+        }
+
+        jdbc.update("INSERT INTO control_commands"
+                + " (id, uav_id, type, status, source, transcript, operator_id, created_at,"
+                + " updated_at, expires_at) VALUES (?, ?, ?, 'QUEUED', ?, ?, ?, ?, ?, ?)",
+            command.id(), command.uavId(), command.type(), command.source(), command.transcript(),
+            operatorId, timestamp(command.createdAt()), timestamp(command.createdAt()),
+            Timestamp.from(expiresAt));
+        if (idempotencyKey != null) {
+            try {
+                jdbc.update("INSERT INTO idempotency_records"
+                        + " (scope, idempotency_key, request_fingerprint, result_ref)"
+                        + " VALUES (?, ?, ?, ?)",
+                    scope, idempotencyKey, fingerprint, command.id());
+            } catch (DuplicateKeyException raced) {
+                throw new IdempotencyInProgressException(idempotencyKey);
+            }
+        }
+        return new CommandReservation(true, command.id(), null, null, null);
+    }
+
+    public void recordCommandDispatch(String commandId, boolean accepted, String adapter,
+                                      String reason) {
+        jdbc.update("UPDATE control_commands SET dispatch_accepted = ?, dispatch_adapter = ?,"
+                + " dispatch_reason = ?, status = CASE WHEN status = 'QUEUED' THEN ? ELSE status END,"
+                + " updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            accepted, adapter, reason, accepted ? "SENT" : "FAILED", commandId);
+    }
+
+    public List<RecoverableCommand> recoverableCommands() {
+        return jdbc.query("SELECT id, type, source, expires_at FROM control_commands"
+                + " WHERE status IN ('QUEUED', 'SENT') AND expires_at IS NOT NULL",
+            (rs, row) -> new RecoverableCommand(rs.getString("id"), rs.getString("type"),
+                rs.getString("source"), rs.getTimestamp("expires_at").toInstant()));
+    }
+
     public void updateCommandStatus(String id, String status) {
         jdbc.update("UPDATE control_commands SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
+    }
+
+    public boolean updateOpenCommandStatus(String id, String status) {
+        return jdbc.update("UPDATE control_commands SET status = ?,"
+                + " dispatch_accepted = CASE WHEN ? = 'TIMEOUT' AND dispatch_accepted IS NULL"
+                + " THEN FALSE ELSE dispatch_accepted END,"
+                + " dispatch_reason = CASE WHEN ? = 'TIMEOUT' AND dispatch_reason IS NULL"
+                + " THEN 'Command expired before dispatch outcome was recorded'"
+                + " ELSE dispatch_reason END, updated_at = CURRENT_TIMESTAMP"
+                + " WHERE id = ? AND status IN ('QUEUED', 'SENT')",
+            status, status, status, id) == 1;
+    }
+
+    @Transactional
+    public boolean acknowledgeCommand(String id, long uavId, String event, String detail,
+                                      double latitude, double longitude) {
+        if (!updateOpenCommandStatus(id, "ACKNOWLEDGED")) return false;
+        insertFlightLog(uavId, event, detail, latitude, longitude);
+        return true;
     }
 
     public long insertFlightLog(long uavId, String event, String detail, double latitude, double longitude) {

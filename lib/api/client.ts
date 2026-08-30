@@ -28,6 +28,17 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
 const EXPLICIT_LOGOUT_KEY = "zhiyuan-explicit-logout"
 let accessToken: string | null = null
 
+const telemetryPointSchema = z.object({
+  uavCode: z.string(),
+  observedAt: z.string(),
+  status: z.string(),
+  battery: z.number(),
+  latitude: z.number(),
+  longitude: z.number(),
+  altitude: z.number(),
+  speed: z.number(),
+})
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -246,11 +257,19 @@ export const api = {
   uavs: (query = "") => apiRequest(`/api/v1/uavs${query}`, pageSchema(uavSchema)),
   allUavs: () => fetchAllPages("/api/v1/uavs", uavSchema),
   uav: (id: number) => apiRequest(`/api/v1/uavs/${id}`, uavSchema),
-  command: (id: number, body: { type: string; source: string; transcript?: string }) =>
+  command: (
+    id: number,
+    body: { type: string; source: string; transcript?: string },
+    idempotencyKey?: string
+  ) =>
     apiRequest(
       `/api/v1/uavs/${id}/commands`,
       z.object({ commandId: z.string(), status: z.literal("QUEUED"), adapter: z.string() }),
-      { method: "POST", body: JSON.stringify(body) }
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+        ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
+      }
     ),
   readiness: (id: number) => apiRequest(`/api/v1/uavs/${id}/readiness`, readinessSchema),
   commands: () => apiRequest("/api/v1/uavs/commands", z.array(commandSchema)),
@@ -364,6 +383,11 @@ export const api = {
     apiRequest(`/api/v1/orders/${orderId}/cancel`, orderSchema, { method: "POST" }),
   tasks: () => apiRequest("/api/v1/tasks", pageSchema(taskSchema)),
   allTasks: () => fetchAllPages("/api/v1/tasks", taskSchema),
+  telemetryHistory: (uavId: number, from: string, to: string, resolution: "raw" | "1m" = "raw") =>
+    apiRequest(
+      `/api/v1/uavs/${uavId}/telemetry?${new URLSearchParams({ from, to, resolution })}`,
+      z.array(telemetryPointSchema)
+    ),
   transitionTask: (id: number, target: "FLYING" | "ARRIVED" | "FAILED", failureReason?: string) => {
     const action = { FLYING: "start", ARRIVED: "arrive", FAILED: "fail" }[target]
     return apiRequest(`/api/v1/tasks/${id}/${action}`, taskSchema, {

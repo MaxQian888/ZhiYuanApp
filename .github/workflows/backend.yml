@@ -40,12 +40,15 @@ jobs:
       - name: Start MQTT broker
         run: docker compose up -d --wait mqtt
 
-      # Testcontainers-backed tests need a working Docker daemon; ubuntu-latest
-      # ships one. The MySQL container is started by the test itself.
+      # The main suite must always use the simulator test profile. Exporting MQTT_URL here
+      # silently changed every Spring context to the broker adapter.
       - name: Maven verify
+        run: mvn -B -f server/pom.xml verify
+
+      - name: MQTT adapter contract
         env:
           MQTT_URL: tcp://localhost:1883
-        run: mvn -B -f server/pom.xml verify
+        run: mvn -B -f server/pom.xml -Dtest=MqttUavAdapterTest test
 
       - name: Confirm the MQTT contract actually ran
         run: |
@@ -153,7 +156,7 @@ jobs:
 
       # Blocking, same reasoning as the Node audit.
       - name: Cargo dependency audit
-        run: cargo audit --file src-tauri/Cargo.lock --deny warnings
+        run: node scripts/check-rust-advisories.mjs
 
   docs:
     name: Documentation site

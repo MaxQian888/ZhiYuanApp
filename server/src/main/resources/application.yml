@@ -76,6 +76,10 @@ zhiyuan:
     outbox-poll-millis: ${REALTIME_OUTBOX_POLL_MILLIS:200}
     resync-seconds: ${REALTIME_RESYNC_SECONDS:30}
     outbox-retention-hours: ${REALTIME_OUTBOX_RETENTION_HOURS:24}
+    outbox-lease-seconds: ${REALTIME_OUTBOX_LEASE_SECONDS:30}
+    outbox-degraded-seconds: ${REALTIME_OUTBOX_DEGRADED_SECONDS:60}
+    # First rollout is deliberately off; enable only after every pre-lease publisher is gone.
+    publisher-enabled: ${REALTIME_OUTBOX_PUBLISHER_ENABLED:false}
   telemetry:
     archive-queue: ${TELEMETRY_ARCHIVE_QUEUE:20000}
     # When true, an unreachable archive is reported as a degraded subsystem rather than
