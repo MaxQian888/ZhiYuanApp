@@ -111,6 +111,10 @@ class RemoteReliabilityContractTest {
                     observedAt.plusSeconds(30), TelemetryArchive.Resolution.RAW))
                     .anyMatch(point -> point.battery() == 67));
             await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                assertThat(archive.query(UAV_CODE, observedAt.minusSeconds(30),
+                    observedAt.plusSeconds(30), TelemetryArchive.Resolution.ONE_MINUTE))
+                    .hasSize(1));
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
                 assertThat(events.replaySince("0"))
                     .anyMatch(event -> "telemetry-delta".equals(event.name())));
 

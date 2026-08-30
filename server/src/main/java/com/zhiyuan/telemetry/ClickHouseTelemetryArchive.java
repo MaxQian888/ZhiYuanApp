@@ -3,8 +3,6 @@ package com.zhiyuan.telemetry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhiyuan.device.DeviceMessages;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -40,8 +38,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link InMemoryTelemetryArchive} takes its place.
  */
 public class ClickHouseTelemetryArchive implements TelemetryArchive {
-    private static final Logger log = LoggerFactory.getLogger(ClickHouseTelemetryArchive.class);
-
     private final HttpClient http;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final String baseUrl;
@@ -60,6 +56,9 @@ public class ClickHouseTelemetryArchive implements TelemetryArchive {
 
     ClickHouseTelemetryArchive(String baseUrl, String database, String username, String password,
                                long timeoutSeconds, Clock clock) {
+        if (database == null || !database.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            throw new IllegalArgumentException("ClickHouse database must be a safe identifier");
+        }
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.database = database;
         this.authorization = "Basic " + Base64.getEncoder()
@@ -89,17 +88,26 @@ public class ClickHouseTelemetryArchive implements TelemetryArchive {
         TelemetryArchive.requireWithinRetention(resolution, from, clock.instant());
         String table = resolution == Resolution.RAW ? "telemetry_raw" : "telemetry_1m";
         String timeColumn = resolution == Resolution.RAW ? "observed_at" : "minute";
+        String finalModifier = resolution == Resolution.RAW ? " FINAL" : "";
+        String values = resolution == Resolution.RAW
+            ? "status, battery, latitude, longitude, altitude, speed"
+            : "argMaxMerge(status) AS status, argMaxMerge(battery) AS battery,"
+                + " argMaxMerge(latitude) AS latitude, argMaxMerge(longitude) AS longitude,"
+                + " maxMerge(altitude) AS altitude, maxMerge(speed) AS speed";
+        String groupBy = resolution == Resolution.ONE_MINUTE
+            ? " GROUP BY uav_code, minute"
+            : "";
 
         // Parameterised so a device code can never be spliced into SQL.
-        String sql = "SELECT uav_code, " + timeColumn + " AS observed_at, status, battery,"
-            + " latitude, longitude, altitude, speed"
-            + " FROM " + database + "." + table
+        String sql = "SELECT uav_code, " + timeColumn + " AS observed_at, " + values
+            + " FROM " + database + "." + table + finalModifier
             + " WHERE uav_code = {code:String}"
             + " AND " + timeColumn + " BETWEEN {from:DateTime64(3)} AND {to:DateTime64(3)}"
+            + groupBy
             + " ORDER BY " + timeColumn
             + " FORMAT JSONEachRow";
 
-        String body = execute(sql + queryParameters(uavCode, from, to), null);
+        String body = execute(sql, null, queryParameters(uavCode, from, to));
         List<Point> points = new ArrayList<>();
         for (String line : body.split("\n")) {
             if (line.isBlank()) continue;
@@ -111,7 +119,9 @@ public class ClickHouseTelemetryArchive implements TelemetryArchive {
                     node.get("latitude").asDouble(), node.get("longitude").asDouble(),
                     node.get("altitude").asDouble(), node.get("speed").asDouble()));
             } catch (RuntimeException | IOException malformed) {
-                log.warn("Skipping unparseable telemetry row from ClickHouse", malformed);
+                reachable.set(false);
+                throw new ArchiveUnavailableException(
+                    "ClickHouse returned a malformed telemetry response", malformed);
             }
         }
         return points;
@@ -140,7 +150,11 @@ public class ClickHouseTelemetryArchive implements TelemetryArchive {
     }
 
     private String execute(String sql, String body) {
-        URI uri = URI.create(baseUrl + "/?query=" + encode(sql));
+        return execute(sql, body, "");
+    }
+
+    private String execute(String sql, String body, String parameters) {
+        URI uri = URI.create(baseUrl + "/?wait_end_of_query=1&query=" + encode(sql) + parameters);
         HttpRequest request = HttpRequest.newBuilder(uri)
             .timeout(timeout)
             .header("Authorization", authorization)

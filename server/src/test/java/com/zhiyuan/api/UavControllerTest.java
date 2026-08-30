@@ -233,4 +233,14 @@ class UavControllerTest {
                 + "&resolution=hourly").header("Authorization", bearer))
             .andExpect(status().isBadRequest());
     }
+
+    @Test
+    void refusesATelemetryQueryEvenOneSecondPastTheTwentyFourHourLimit() throws Exception {
+        Instant to = Instant.now();
+        Instant from = to.minus(Duration.ofHours(24)).minusSeconds(1);
+
+        mvc.perform(get("/api/v1/uavs/1/telemetry?from=" + from + "&to=" + to)
+                .header("Authorization", bearer))
+            .andExpect(status().isBadRequest());
+    }
 }

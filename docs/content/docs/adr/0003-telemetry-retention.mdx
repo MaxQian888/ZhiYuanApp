@@ -5,7 +5,7 @@ description: MySQL 只存当前快照，ClickHouse 存历史轨迹，raw 保 7 �
 
 # 0003 · 遥测留存与存储分工
 
-**状态：** 已接受 · **日期：** 2026-08-22
+**状态：** 已接受 · **日期：** 2026-08-22 · **修订：** 2026-08-30（真实归档契约）
 
 ## 背景
 
@@ -25,7 +25,11 @@ description: MySQL 只存当前快照，ClickHouse 存历史轨迹，raw 保 7 �
 
 `uavs` 表只有一行代表"这台设备现在在哪"，被遥测流不断覆盖。它是**派生的、可重建的** —— 真正的序列在 ClickHouse。
 
-写入用 Java 客户端经 TLS **批量**提交（按条数或时间窗口触发，取先到者）。批次带幂等标识，重试不会产生重复查询结果（ClickHouse 侧用 `ReplacingMergeTree` 按 `(uavCode, observedAt, eventId)` 去重）。
+写入使用 ClickHouse HTTP(S) 接口，以 `JSONEachRow` **批量**提交（200 条或 500ms 取先到者）。每条样本带稳定的 `eventId`；`telemetry_raw` 用 `ReplacingMergeTree` 按 `(uavCode, observedAt, eventId)` 收敛重放，raw 查询再使用 `FINAL` 获得即时去重结果，不依赖后台 merge 是否已经完成。
+
+`telemetry_1m` 由 Materialized View 写入 `AggregatingMergeTree`。状态、电量和坐标使用 `argMaxState(value, (observedAt, sequence, eventId))`，查询使用对应的 `argMaxMerge`；因此旧批次晚到或重放不会把轨迹回退到较早位置。高度、速度使用 `maxState/maxMerge`。分钟表不保存精确 event ID 集或样本计数：在 365 天、2,500 samples/s 的规模下，精确去重集合会比 raw 留存更大；吞吐和丢弃量由归档指标记录。一次分钟窗口可能来自多个 insert part，因此查询仍按 `(uavCode, minute)` 聚合；否则 merge 尚未发生时 API 会为同一分钟返回多点。HTTP 参数通过 ClickHouse 的 `{name:Type}` 与 `param_name` 传递，不拼接设备编号。响应中任意一行无法解析时整次查询返回 503，不返回看似成功的残缺轨迹。
+
+已有环境用 `clickhouse/migrations/002_event_time_rollup_up.sql` 蓝绿替换分钟表：暂停归档写入，保留并继续更新旧表作为回滚目标，从旧降采样保留超过 raw 留存期的历史，再用 `telemetry_raw FINAL` 重建最近 7 天。观察期内可用配套 `down` 脚本回滚；新环境直接应用 `schema.sql`，不得重复执行迁移。
 
 查询入口是 `GET /api/v1/uavs/{id}/telemetry?from&to&resolution=raw|1m`，`resolution` 显式选择表，**不做自动降级** —— 让调用方知道自己拿的是哪种精度。超出保留期的时间范围返回明确错误而不是空数组。
 

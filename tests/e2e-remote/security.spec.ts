@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { connectAsync } from "mqtt"
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/login")
@@ -113,4 +114,83 @@ test("browser CORS preflight and repeated order submissions preserve idempotency
     conflictStatus: 409,
   })
   expect(result.replayOrderId).toBe(result.firstOrderId)
+})
+
+test("the public telemetry endpoint reads the MQTT sample persisted in ClickHouse", async ({
+  page,
+}) => {
+  const eventId = crypto.randomUUID()
+  const observedAt = new Date()
+  const battery = 68
+  const payload = JSON.stringify({
+    schemaVersion: 1,
+    eventId,
+    uavCode: "UAV-01",
+    sequence: Date.now(),
+    observedAt: observedAt.toISOString(),
+    status: "FLYING",
+    battery,
+    latitude: 32.0602,
+    longitude: 118.7802,
+    altitude: 52.5,
+    speed: 9.3,
+  })
+  const mqtt = await connectAsync("mqtt://127.0.0.1:1883", {
+    clientId: `playwright-${eventId}`,
+    reconnectPeriod: 0,
+  })
+  try {
+    await page.goto("/login")
+
+    const accessToken = await page.evaluate(async () => {
+      const response = await fetch("http://localhost:8080/api/v1/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "admin123", client: "web" }),
+      })
+      const loginPayload = await response.json()
+      return loginPayload.data.accessToken as string
+    })
+
+    await expect
+      .poll(
+        async () => {
+          // The HTTP readiness probe can win the race with the MQTT subscription. Replaying the
+          // same immutable event makes the fixture reliable without creating extra history rows.
+          await mqtt.publishAsync("zhiyuan/v1/uavs/UAV-01/telemetry", payload, { qos: 1 })
+          return page.evaluate(
+            async ({ token, expectedEventTime, expectedBattery }) => {
+              const observed = new Date(expectedEventTime).getTime()
+              const query = new URLSearchParams({
+                from: new Date(observed - 60_000).toISOString(),
+                to: new Date(observed + 60_000).toISOString(),
+                resolution: "raw",
+              })
+              const response = await fetch(
+                `http://localhost:8080/api/v1/uavs/1/telemetry?${query}`,
+                { headers: { Authorization: `Bearer ${token}` } }
+              )
+              if (!response.ok) return false
+              const telemetry = await response.json()
+              return telemetry.data.some(
+                (point: { uavCode: string; battery: number; observedAt: string }) =>
+                  point.uavCode === "UAV-01" &&
+                  point.battery === expectedBattery &&
+                  new Date(point.observedAt).getTime() === observed
+              )
+            },
+            {
+              token: accessToken,
+              expectedEventTime: observedAt.toISOString(),
+              expectedBattery: battery,
+            }
+          )
+        },
+        { timeout: 15_000 }
+      )
+      .toBe(true)
+  } finally {
+    await mqtt.endAsync()
+  }
 })

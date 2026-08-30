@@ -109,6 +109,14 @@ jobs:
           CLICKHOUSE_PASSWORD: zhiyuan-dev
         run: mvn -B -f server/pom.xml -Dtest=ClickHouseTelemetryArchiveContractTest test
 
+      - name: Confirm the ClickHouse contract ran
+        run: |
+          report=server/target/surefire-reports/TEST-com.zhiyuan.telemetry.ClickHouseTelemetryArchiveContractTest.xml
+          if [ ! -f "$report" ] || grep -Eq 'skipped="[1-9]' "$report"; then
+            echo "::error::ClickHouseTelemetryArchiveContractTest was missing or skipped."
+            exit 1
+          fi
+
       - name: MQTT to MySQL, ClickHouse, Outbox and SSE contract
         env:
           REMOTE_RELIABILITY_CONTRACT: "true"
@@ -125,8 +133,19 @@ jobs:
           -Dspring.profiles.active=development
           -Dtest=RemoteReliabilityContractTest test
 
+      - name: Confirm the remote reliability contract ran
+        run: |
+          report=server/target/surefire-reports/TEST-com.zhiyuan.realtime.RemoteReliabilityContractTest.xml
+          if [ ! -f "$report" ] || grep -Eq 'skipped="[1-9]' "$report"; then
+            echo "::error::RemoteReliabilityContractTest was missing or skipped."
+            exit 1
+          fi
+
       - name: Run remote E2E tests
         run: pnpm test:e2e:remote
+
+      - name: ClickHouse rollup migration and rollback contract
+        run: bash scripts/verify-clickhouse-rollup-migration.sh
 
       - name: Dump service logs on failure
         if: failure()

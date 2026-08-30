@@ -11,13 +11,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -55,20 +48,11 @@ public class TelemetryIngestService implements DeviceEventListener {
     private final TransactionTemplate transactions;
     private final boolean archiveRequired;
 
-    private final BlockingQueue<DeviceMessages.Telemetry> archiveQueue;
+    private final TelemetryArchiveBatcher archiveBatcher;
 
     private final AtomicLong accepted = new AtomicLong();
     private final AtomicLong rejected = new AtomicLong();
     private final AtomicLong stale = new AtomicLong();
-    private final AtomicLong archiveDropped = new AtomicLong();
-    private final AtomicLong archiveFailures = new AtomicLong();
-
-    private final ScheduledExecutorService flusher = Executors.newSingleThreadScheduledExecutor(
-        runnable -> {
-            Thread thread = new Thread(runnable, "telemetry-archive-flush");
-            thread.setDaemon(true);
-            return thread;
-        });
 
     public TelemetryIngestService(UavAdapter adapter, DeviceIngestRepository repository,
                                   DeviceRegistry registry, TelemetryArchive archive,
@@ -80,16 +64,16 @@ public class TelemetryIngestService implements DeviceEventListener {
         this.registry = registry;
         this.archive = archive;
         this.transactions = new TransactionTemplate(transactionManager);
-        this.archiveQueue = new ArrayBlockingQueue<>(queueCapacity);
+        this.archiveBatcher = new TelemetryArchiveBatcher(archive, queueCapacity,
+            ARCHIVE_BATCH_SIZE, java.time.Duration.ofMillis(ARCHIVE_FLUSH_MILLIS));
         this.archiveRequired = archiveRequired;
     }
 
     @PostConstruct
     public void start() {
+        archiveBatcher.start();
         // Without this the freshness gate never sees a sample and every command is refused.
         adapter.subscribe(this);
-        flusher.scheduleWithFixedDelay(this::flushArchive, ARCHIVE_FLUSH_MILLIS,
-            ARCHIVE_FLUSH_MILLIS, TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -168,29 +152,12 @@ public class TelemetryIngestService implements DeviceEventListener {
     }
 
     private void enqueueForArchive(DeviceMessages.Telemetry sample) {
-        if (archiveQueue.offer(sample)) return;
-        // The archive is behind and the buffer is full. Dropping the oldest keeps the most
-        // recent history, which is what an incident review actually needs.
-        archiveQueue.poll();
-        if (!archiveQueue.offer(sample)) archiveDropped.incrementAndGet();
-        archiveDropped.incrementAndGet();
+        archiveBatcher.offer(sample);
     }
 
     /** Drains the buffer into the archive. Never throws; failures are counted and retried. */
     void flushArchive() {
-        List<DeviceMessages.Telemetry> batch = new ArrayList<>(ARCHIVE_BATCH_SIZE);
-        archiveQueue.drainTo(batch, ARCHIVE_BATCH_SIZE);
-        if (batch.isEmpty()) return;
-        try {
-            archive.append(batch);
-        } catch (RuntimeException failure) {
-            archiveFailures.incrementAndGet();
-            log.warn("Telemetry archive write failed for {} samples; will retry", batch.size(),
-                failure);
-            // Put them back at the tail. If the buffer has filled meanwhile, the oldest are
-            // dropped by enqueueForArchive, which is the bounded-loss behaviour we want.
-            batch.forEach(this::enqueueForArchive);
-        }
+        archiveBatcher.flushNow();
     }
 
     private void reject(String uavCode, String topic, String reason, String detail) {
@@ -220,15 +187,19 @@ public class TelemetryIngestService implements DeviceEventListener {
     }
 
     public long archiveDroppedCount() {
-        return archiveDropped.get();
+        return archiveBatcher.droppedCount();
     }
 
     public long archiveFailureCount() {
-        return archiveFailures.get();
+        return archiveBatcher.failureCount();
+    }
+
+    public long archiveAbandonedCount() {
+        return archiveBatcher.abandonedCount();
     }
 
     public int archiveBacklog() {
-        return archiveQueue.size();
+        return archiveBatcher.backlog();
     }
 
     /** True when the archive is configured as required and is currently unreachable. */
@@ -242,7 +213,6 @@ public class TelemetryIngestService implements DeviceEventListener {
 
     @PreDestroy
     public void stop() {
-        flusher.shutdownNow();
-        flushArchive();
+        archiveBatcher.close();
     }
 }

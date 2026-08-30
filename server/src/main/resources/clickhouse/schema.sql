@@ -37,19 +37,23 @@ SETTINGS index_granularity = 8192;
 
 -- One row per device per minute, for trends and capacity work.
 --
--- Aggregating state rather than plain numbers so the rollup stays correct when parts merge;
--- a plain avg() column would be re-averaged on merge and drift.
+-- Aggregate states make retries and out-of-order delivery deterministic. The event-time tuple
+-- breaks timestamp ties with the device sequence and immutable event id. We intentionally do not
+-- retain an exact event-id set in the 365-day table: at fleet scale it would outgrow raw history.
 CREATE TABLE IF NOT EXISTS zhiyuan.telemetry_1m
 (
     uav_code   LowCardinality(String),
     minute     DateTime('UTC'),
-    status     SimpleAggregateFunction(anyLast, LowCardinality(String)),
-    battery    SimpleAggregateFunction(anyLast, UInt8),
-    latitude   SimpleAggregateFunction(anyLast, Float64),
-    longitude  SimpleAggregateFunction(anyLast, Float64),
-    altitude   SimpleAggregateFunction(max, Float32),
-    speed      SimpleAggregateFunction(max, Float32),
-    samples    SimpleAggregateFunction(sum, UInt64)
+    status     AggregateFunction(argMax, String,
+                   Tuple(DateTime64(3, 'UTC'), UInt64, String)),
+    battery    AggregateFunction(argMax, UInt8,
+                   Tuple(DateTime64(3, 'UTC'), UInt64, String)),
+    latitude   AggregateFunction(argMax, Float64,
+                   Tuple(DateTime64(3, 'UTC'), UInt64, String)),
+    longitude  AggregateFunction(argMax, Float64,
+                   Tuple(DateTime64(3, 'UTC'), UInt64, String)),
+    altitude   AggregateFunction(max, Float32),
+    speed      AggregateFunction(max, Float32)
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(minute)
@@ -61,13 +65,12 @@ SETTINGS index_granularity = 8192;
 CREATE MATERIALIZED VIEW IF NOT EXISTS zhiyuan.telemetry_1m_mv TO zhiyuan.telemetry_1m AS
 SELECT
     uav_code,
-    toStartOfMinute(observed_at) AS minute,
-    anyLast(status)              AS status,
-    anyLast(battery)             AS battery,
-    anyLast(latitude)            AS latitude,
-    anyLast(longitude)           AS longitude,
-    max(altitude)                AS altitude,
-    max(speed)                   AS speed,
-    count()                      AS samples
+    toStartOfMinute(observed_at)                                        AS minute,
+    argMaxState(toString(status), tuple(observed_at, sequence, event_id)) AS status,
+    argMaxState(battery, tuple(observed_at, sequence, event_id))         AS battery,
+    argMaxState(latitude, tuple(observed_at, sequence, event_id))        AS latitude,
+    argMaxState(longitude, tuple(observed_at, sequence, event_id))       AS longitude,
+    maxState(altitude)                                                   AS altitude,
+    maxState(speed)                                                      AS speed
 FROM zhiyuan.telemetry_raw
 GROUP BY uav_code, minute;

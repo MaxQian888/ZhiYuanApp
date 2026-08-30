@@ -128,7 +128,8 @@ public class UavController {
         Instant start = parseInstant(from, "from");
         Instant end = parseInstant(to, "to");
         if (!start.isBefore(end)) throw new IllegalArgumentException("'from' must be before 'to'");
-        if (java.time.Duration.between(start, end).toHours() > MAX_QUERY_HOURS) {
+        if (java.time.Duration.between(start, end)
+            .compareTo(java.time.Duration.ofHours(MAX_QUERY_HOURS)) > 0) {
             throw new IllegalArgumentException(
                 "Range exceeds the " + MAX_QUERY_HOURS + " hour maximum for a single query");
         }

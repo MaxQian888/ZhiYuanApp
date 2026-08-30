@@ -84,6 +84,7 @@ public class PlatformObservability {
             Health.Builder health = Health.up()
                 .withDetail("backlog", ingest.archiveBacklog())
                 .withDetail("dropped", ingest.archiveDroppedCount())
+                .withDetail("abandoned", ingest.archiveAbandonedCount())
                 .withDetail("failures", ingest.archiveFailureCount());
             return ingest.archiveDegraded()
                 ? health.status(DEGRADED).withDetail("reason", "Archive unreachable").build()
@@ -144,8 +145,12 @@ public class PlatformObservability {
             gauge(registry, "zhiyuan.telemetry.rejected", ingest, TelemetryIngestService::rejectedCount);
             gauge(registry, "zhiyuan.telemetry.stale", ingest, TelemetryIngestService::staleCount);
             gauge(registry, "zhiyuan.telemetry.archive.backlog", ingest, TelemetryIngestService::archiveBacklog);
-            gauge(registry, "zhiyuan.telemetry.archive.dropped", ingest, TelemetryIngestService::archiveDroppedCount);
-            gauge(registry, "zhiyuan.telemetry.archive.failures", ingest, TelemetryIngestService::archiveFailureCount);
+            gauge(registry, "zhiyuan.telemetry.archive.dropped", ingest,
+                TelemetryIngestService::archiveDroppedCount);
+            gauge(registry, "zhiyuan.telemetry.archive.abandoned", ingest,
+                TelemetryIngestService::archiveAbandonedCount);
+            gauge(registry, "zhiyuan.telemetry.archive.failures", ingest,
+                TelemetryIngestService::archiveFailureCount);
             gauge(registry, "zhiyuan.realtime.subscribers", bus, PlatformEventBus::subscriberCount);
             gauge(registry, "zhiyuan.realtime.subscribers.dropped", bus, PlatformEventBus::droppedSubscriberCount);
             gauge(registry, "zhiyuan.commands.pending", dispatcher, CommandDispatcher::pendingCount);
