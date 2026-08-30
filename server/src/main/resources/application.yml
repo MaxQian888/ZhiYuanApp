@@ -98,5 +98,14 @@ zhiyuan:
     client-id-prefix: ${MQTT_CLIENT_ID_PREFIX:zhiyuan}
     username: ${MQTT_USERNAME:}
     password: ${MQTT_PASSWORD:}
+    # Temporary, authenticated rollback switch for an in-place broker mTLS migration.
+    # Production defaults to false and the legacy listener must be removed after cutover.
+    allow-plaintext-migration: ${MQTT_ALLOW_PLAINTEXT_MIGRATION:false}
+    # PKCS#12 stores. ProductionConfigGuard requires both for ssl:// brokers; local tcp://
+    # development remains certificate-free.
+    key-store: ${MQTT_TLS_KEY_STORE:}
+    key-store-password: ${MQTT_TLS_KEY_STORE_PASSWORD:}
+    trust-store: ${MQTT_TLS_TRUST_STORE:}
+    trust-store-password: ${MQTT_TLS_TRUST_STORE_PASSWORD:}
     share-group: ${MQTT_SHARE_GROUP:zhiyuan-ingest}
     topic-root: ${MQTT_TOPIC_ROOT:zhiyuan/v1}

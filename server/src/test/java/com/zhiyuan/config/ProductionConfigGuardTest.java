@@ -27,6 +27,11 @@ class ProductionConfigGuardTest {
         settings.put("zhiyuan.telemetry.archive-required", "true");
         settings.put("zhiyuan.clickhouse.url", "https://clickhouse.internal:8443");
         settings.put("zhiyuan.mqtt.url", "ssl://mqtt.internal:8883");
+        settings.put("zhiyuan.mqtt.topic-root", "zhiyuan/v1");
+        settings.put("zhiyuan.mqtt.key-store", "/run/secrets/platform-mqtt.p12");
+        settings.put("zhiyuan.mqtt.key-store-password", "not-empty");
+        settings.put("zhiyuan.mqtt.trust-store", "/run/secrets/mqtt-ca.p12");
+        settings.put("zhiyuan.mqtt.trust-store-password", "not-empty");
         return settings;
     }
 
@@ -108,6 +113,59 @@ class ProductionConfigGuardTest {
         settings.remove("zhiyuan.mqtt.url");
 
         assertThat(check(settings)).singleElement().asString().contains("MQTT_URL");
+    }
+
+    @Test
+    void rejectsAPlaintextProductionDeviceLink() {
+        Map<String, String> settings = production();
+        settings.put("zhiyuan.mqtt.url", "tcp://mqtt.internal:1883");
+
+        assertThat(check(settings)).singleElement().asString().contains("ssl://");
+    }
+
+    @Test
+    void permitsAnAuthenticatedPlaintextLinkOnlyDuringTheExplicitMigrationWindow() {
+        Map<String, String> settings = production();
+        settings.put("zhiyuan.mqtt.url", "tcp://mqtt.internal:1883");
+        settings.put("zhiyuan.mqtt.allow-plaintext-migration", "true");
+        settings.put("zhiyuan.mqtt.username", "zhiyuan-platform");
+        settings.put("zhiyuan.mqtt.password", "temporary-migration-secret");
+        settings.remove("zhiyuan.mqtt.key-store");
+        settings.remove("zhiyuan.mqtt.key-store-password");
+        settings.remove("zhiyuan.mqtt.trust-store");
+        settings.remove("zhiyuan.mqtt.trust-store-password");
+
+        assertThat(check(settings)).isEmpty();
+    }
+
+    @Test
+    void rejectsAnAnonymousPlaintextMigrationLink() {
+        Map<String, String> settings = production();
+        settings.put("zhiyuan.mqtt.url", "tcp://mqtt.internal:1883");
+        settings.put("zhiyuan.mqtt.allow-plaintext-migration", "true");
+
+        assertThat(check(settings)).singleElement().asString()
+            .contains("MQTT_USERNAME", "MQTT_PASSWORD");
+    }
+
+    @Test
+    void rejectsProductionMqttWithoutMutualTlsMaterial() {
+        Map<String, String> settings = production();
+        settings.remove("zhiyuan.mqtt.key-store");
+        settings.remove("zhiyuan.mqtt.trust-store");
+
+        assertThat(check(settings))
+            .hasSize(2)
+            .allSatisfy(problem -> assertThat(problem).contains("MQTT_TLS"));
+    }
+
+    @Test
+    void rejectsATopicRootThatTheBrokerAclDoesNotCover() {
+        Map<String, String> settings = production();
+        settings.put("zhiyuan.mqtt.topic-root", "tenant-a/v1");
+
+        assertThat(check(settings)).singleElement().asString()
+            .contains("MQTT_TOPIC_ROOT", "zhiyuan/v1");
     }
 
     @Test

@@ -45,6 +45,28 @@ services:
       retries: 30
       start_period: 15s
 
+  mqtt-secure:
+    profiles: ["security-contract"]
+    image: emqx/emqx:5.8.6
+    environment:
+      EMQX_NODE__COOKIE: zhiyuan-mtls-contract
+      EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "true"
+    ports:
+      - "1884:1883" # authenticated legacy listener for the in-place migration contract
+      - "8884:8883" # dedicated mTLS contract listener
+      - "18084:18083" # isolated dashboard for diagnostics
+    volumes:
+      - ./infra/mqtt/secure/base.hocon:/opt/emqx/etc/base.hocon:ro
+      - ./infra/mqtt/secure/acl.conf:/opt/emqx/etc/zhiyuan-acl.conf:ro
+      - ./infra/mqtt/secure/contract-legacy-users.csv:/opt/emqx/etc/zhiyuan-legacy-users.csv:ro
+      - ./build/mqtt-certs:/opt/emqx/etc/certs/zhiyuan:ro
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     environment:

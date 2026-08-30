@@ -1,0 +1,47 @@
+listeners.tcp.default {
+  bind = "0.0.0.0:1883"
+  enable = false
+  enable_authn = true
+  authentication = [
+    {
+      mechanism = password_based
+      backend = built_in_database
+      password_hash_algorithm {
+        name = sha256
+        salt_position = suffix
+      }
+      user_id_type = username
+      bootstrap_file = "/opt/emqx/etc/zhiyuan-legacy-users.csv"
+      bootstrap_type = plain
+    }
+  ]
+}
+
+listeners.ssl.default {
+  bind = "0.0.0.0:8883"
+  enable_authn = quick_deny_anonymous
+  ssl_options {
+    cacertfile = "/opt/emqx/etc/certs/zhiyuan/ca.crt"
+    certfile = "/opt/emqx/etc/certs/zhiyuan/server.crt"
+    keyfile = "/opt/emqx/etc/certs/zhiyuan/server.key"
+    verify = verify_peer
+    fail_if_no_peer_cert = true
+    versions = ["tlsv1.3", "tlsv1.2"]
+  }
+}
+
+mqtt {
+  peer_cert_as_username = cn
+}
+
+authorization {
+  no_match = deny
+  deny_action = disconnect
+  sources = [
+    {
+      type = file
+      enable = true
+      path = "/opt/emqx/etc/zhiyuan-acl.conf"
+    }
+  ]
+}

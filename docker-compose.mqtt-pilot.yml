@@ -1,0 +1,45 @@
+# Production-oriented broker template. Certificate variables are host paths to
+# organization-issued material; secrets are mounted read-only and never copied into images.
+services:
+  mqtt:
+    image: emqx/emqx:5.8.6
+    restart: unless-stopped
+    environment:
+      EMQX_NODE__COOKIE: ${MQTT_BROKER_NODE_COOKIE:?set MQTT_BROKER_NODE_COOKIE}
+      # Enable only while legacy clients are being moved to the mTLS listener on this
+      # same broker. Both listeners then share subscriptions, sessions and routing.
+      EMQX_LISTENERS__TCP__DEFAULT__ENABLE: ${MQTT_LEGACY_LISTENER_ENABLED:-false}
+    ports:
+      - "${MQTT_LEGACY_BIND_ADDRESS:-0.0.0.0}:${MQTT_LEGACY_PORT:-1883}:1883"
+      - "${MQTT_TLS_BIND_ADDRESS:-0.0.0.0}:${MQTT_TLS_PORT:-8883}:8883"
+    volumes:
+      - mqtt-data:/opt/emqx/data
+      - ./infra/mqtt/secure/base.hocon:/opt/emqx/etc/base.hocon:ro
+      - ./infra/mqtt/secure/acl.conf:/opt/emqx/etc/zhiyuan-acl.conf:ro
+      - type: bind
+        source: ${MQTT_LEGACY_USERS_FILE:?set MQTT_LEGACY_USERS_FILE}
+        target: /opt/emqx/etc/zhiyuan-legacy-users.csv
+        read_only: true
+      - type: bind
+        source: ${MQTT_BROKER_CA_CERT_FILE:?set MQTT_BROKER_CA_CERT_FILE}
+        target: /opt/emqx/etc/certs/zhiyuan/ca.crt
+        read_only: true
+      - type: bind
+        source: ${MQTT_BROKER_CERT_FILE:?set MQTT_BROKER_CERT_FILE}
+        target: /opt/emqx/etc/certs/zhiyuan/server.crt
+        read_only: true
+      - type: bind
+        source: ${MQTT_BROKER_KEY_FILE:?set MQTT_BROKER_KEY_FILE}
+        target: /opt/emqx/etc/certs/zhiyuan/server.key
+        read_only: true
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  mqtt-data:
+    # Point this at the existing broker volume during an in-place listener upgrade.
+    name: ${MQTT_DATA_VOLUME:-zhiyuan-mqtt-data}

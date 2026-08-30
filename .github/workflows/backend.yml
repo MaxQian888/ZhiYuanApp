@@ -34,11 +34,13 @@ jobs:
           distribution: temurin
           cache: maven
 
-      # The MQTT adapter is the one component that cannot be exercised without a broker,
-      # so the contract subclass runs here. Without MQTT_URL it skips — which is why it is
-      # started explicitly rather than left to chance.
-      - name: Start MQTT broker
-        run: docker compose up -d --wait mqtt
+      - name: Generate ephemeral MQTT contract certificates
+        run: scripts/generate-mqtt-test-certs.sh
+
+      # The anonymous listener is the development contract. The isolated secure listener
+      # proves production mTLS, certificate identity mapping and per-device ACLs.
+      - name: Start MQTT brokers
+        run: docker compose --profile security-contract up -d --wait mqtt mqtt-secure
 
       # The main suite must always use the simulator test profile. Exporting MQTT_URL here
       # silently changed every Spring context to the broker adapter.
@@ -50,6 +52,15 @@ jobs:
           MQTT_URL: tcp://localhost:1883
         run: mvn -B -f server/pom.xml -Dtest=MqttUavAdapterTest test
 
+      - name: MQTT mTLS and per-device ACL contract
+        env:
+          MQTT_MTLS_URL: ssl://localhost:8884
+          MQTT_MTLS_LEGACY_URL: tcp://localhost:1884
+          MQTT_MTLS_PLATFORM_KEY_STORE: ${{ github.workspace }}/build/mqtt-certs/platform.p12
+          MQTT_MTLS_DEVICE_KEY_STORE: ${{ github.workspace }}/build/mqtt-certs/uav-01.p12
+          MQTT_MTLS_TRUST_STORE: ${{ github.workspace }}/build/mqtt-certs/truststore.p12
+        run: mvn -B -f server/pom.xml -Dtest=MqttMtlsAclContractTest test
+
       - name: Confirm the MQTT contract actually ran
         run: |
           if ! grep -rlq "MqttUavAdapterTest" server/target/surefire-reports/; then
@@ -57,14 +68,18 @@ jobs:
             echo "::error::contract silently skipped, which defeats the point of running it in CI."
             exit 1
           fi
+          if ! grep -rlq "MqttMtlsAclContractTest" server/target/surefire-reports/; then
+            echo "::error::MqttMtlsAclContractTest did not run. Production MQTT security is unverified."
+            exit 1
+          fi
 
       - name: Dump broker logs on failure
         if: failure()
-        run: docker compose logs --tail=200 mqtt
+        run: docker compose --profile security-contract logs --tail=200 mqtt mqtt-secure
 
       - name: Stop MQTT broker
         if: always()
-        run: docker compose down -v
+        run: docker compose --profile security-contract down -v
 
       # Blocking, and it needs a key: since the NVD 2.0 API added rate limiting, an
       # unauthenticated first sync takes hours rather than minutes. Rather than let

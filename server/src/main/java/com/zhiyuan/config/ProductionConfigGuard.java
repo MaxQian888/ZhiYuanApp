@@ -1,5 +1,6 @@
 package com.zhiyuan.config;
 
+import com.zhiyuan.device.MqttTopics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationPreparedEvent;
@@ -86,9 +87,40 @@ public class ProductionConfigGuard
             problems.add("TELEMETRY_ARCHIVE_REQUIRED is true but CLICKHOUSE_URL is unset, so the"
                 + " archive that is declared mandatory does not exist.");
         }
-        if (isBlank(property.apply("zhiyuan.mqtt.url"))) {
+        String mqttUrl = property.apply("zhiyuan.mqtt.url");
+        if (isBlank(mqttUrl)) {
             problems.add("MQTT_URL is unset, so the platform would run against the built-in"
                 + " device simulator instead of real aircraft.");
+        } else {
+            boolean tls = mqttUrl.startsWith("ssl://");
+            boolean plaintextMigration = Boolean.parseBoolean(
+                property.apply("zhiyuan.mqtt.allow-plaintext-migration"));
+            if (!tls && !plaintextMigration) {
+                problems.add("MQTT_URL must use ssl:// in production. Set"
+                    + " MQTT_ALLOW_PLAINTEXT_MIGRATION=true only for the bounded broker"
+                    + " migration window.");
+            } else if (!tls && (isBlank(property.apply("zhiyuan.mqtt.username"))
+                || isBlank(property.apply("zhiyuan.mqtt.password")))) {
+                problems.add("MQTT_USERNAME and MQTT_PASSWORD are required while"
+                    + " MQTT_ALLOW_PLAINTEXT_MIGRATION is enabled; the legacy listener must"
+                    + " never be anonymous.");
+            }
+            String topicRoot = property.apply("zhiyuan.mqtt.topic-root");
+            if (!MqttTopics.WIRE_ROOT.equals(topicRoot)) {
+                problems.add("MQTT_TOPIC_ROOT must be " + MqttTopics.WIRE_ROOT
+                    + " in production because the broker ACL is bound to that wire protocol"
+                    + " namespace.");
+            }
+            if (tls && (isBlank(property.apply("zhiyuan.mqtt.key-store"))
+                || isBlank(property.apply("zhiyuan.mqtt.key-store-password")))) {
+                problems.add("MQTT_TLS_KEY_STORE and MQTT_TLS_KEY_STORE_PASSWORD are required"
+                    + " so the platform presents its client certificate.");
+            }
+            if (tls && (isBlank(property.apply("zhiyuan.mqtt.trust-store"))
+                || isBlank(property.apply("zhiyuan.mqtt.trust-store-password")))) {
+                problems.add("MQTT_TLS_TRUST_STORE and MQTT_TLS_TRUST_STORE_PASSWORD are required"
+                    + " so the platform verifies the broker certificate.");
+            }
         }
         return problems;
     }

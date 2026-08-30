@@ -11,6 +11,9 @@ package com.zhiyuan.device;
  */
 public record MqttTopics(String root, String shareGroup) {
 
+    /** Production wire root. The broker ACL is deliberately versioned with this value. */
+    public static final String WIRE_ROOT = "zhiyuan/v1";
+
     public String telemetry(String uavCode) {
         return root + "/uavs/" + uavCode + "/telemetry";
     }

@@ -5,7 +5,7 @@ description: MQTT 5 + QoS 1 + mTLS，topic 以 uavCode 分片，多实例用共�
 
 # 0002 · MQTT 设备链路拓扑
 
-**状态：** 已接受 · **日期：** 2026-08-22 · **修订：** 2026-08-22（客户端选型）
+**状态：** 已接受 · **日期：** 2026-08-22 · **修订：** 2026-08-30（mTLS 强制与设备 ACL）
 
 ## 背景
 
@@ -60,6 +60,39 @@ zhiyuan/v1/platform/events/{eventType}    平台 → 平台   QoS 1
 ### 认证与授权
 
 设备用 **mTLS**，证书 CN 即 `uavCode`。broker ACL 只允许每台设备读写自己那五个 topic。这样一台被攻破的设备无法监听或伪造其他设备。
+
+生产平台连接同样必须使用 mTLS。`ProductionConfigGuard` 拒绝 `tcp://`，并要求以下四个配置全部存在：
+
+- `MQTT_TLS_KEY_STORE` / `MQTT_TLS_KEY_STORE_PASSWORD`：平台客户端证书与私钥，PKCS#12 格式。
+- `MQTT_TLS_TRUST_STORE` / `MQTT_TLS_TRUST_STORE_PASSWORD`：只信任自管 MQTT CA 的 PKCS#12 trust store。
+
+broker 的 `peer_cert_as_username = cn` 将已经通过 CA 验证的证书 CN 映射为 username；ACL 再以 `zhiyuan/v1/uavs/${username}/...` 约束 topic。两者缺一不可：只做 CN 映射而不强制 `verify_peer` 会允许自签名证书冒充任意设备，只做 mTLS 而没有 ACL 则仍允许一台合法设备访问其他设备的数据。
+
+仓库保留两个明确隔离的运行面：默认 `mqtt` 服务是只供本地开发的匿名明文 broker；`mqtt-secure` 位于 `security-contract` Compose profile，使用临时 CA、强制客户端证书并启用 deny-by-default ACL。可在本地运行：
+
+```bash
+scripts/generate-mqtt-test-certs.sh
+docker compose --profile security-contract up -d --wait mqtt-secure
+MQTT_MTLS_URL=ssl://localhost:8884 \
+MQTT_MTLS_PLATFORM_KEY_STORE="$PWD/build/mqtt-certs/platform.p12" \
+MQTT_MTLS_DEVICE_KEY_STORE="$PWD/build/mqtt-certs/uav-01.p12" \
+MQTT_MTLS_TRUST_STORE="$PWD/build/mqtt-certs/truststore.p12" \
+mvn -f server/pom.xml -Dtest=MqttMtlsAclContractTest test
+```
+
+测试证书有效期只有两天且生成在 gitignored 的 `build/` 下，绝不能用于部署。生产证书由组织 CA 签发和轮换；broker 仅信任这套私有 CA，不信任公共 Web PKI。
+
+生产部署使用 `docker-compose.mqtt-pilot.yml` 作为最小模板。证书通过 `MQTT_BROKER_CA_CERT_FILE`、`MQTT_BROKER_CERT_FILE`、`MQTT_BROKER_KEY_FILE` 指向宿主机 secret 并只读挂载，不把私钥写进镜像或仓库。`MQTT_TOPIC_ROOT` 在生产固定为 `zhiyuan/v1`；启动保护器会拒绝其他值，契约测试也直接引用同一 Java 常量，因此代码与静态 ACL 漂移会在真实 broker 测试中失败。
+
+### mTLS 滚动切换与回滚
+
+安全 listener 必须添加到现有 broker/cluster，而不是启动一个不做 bridge 的独立 broker。模板中的 TCP 与 mTLS listener 属于同一 EMQX 节点，共享 session、subscription 和消息路由，形成明确的双栈窗口：
+
+1. 使用组织 CA 签发 broker、平台和设备证书；让 `MQTT_DATA_VOLUME` 指向现有 broker 数据卷，在同一节点上加载本配置，并设置 `MQTT_LEGACY_LISTENER_ENABLED=true`。旧 listener 使用内置密码认证，账号由只读的 `MQTT_LEGACY_USERS_FILE` 引导，绝不允许匿名连接。
+2. 新版本平台可先以 `MQTT_ALLOW_PLAINTEXT_MIGRATION=true` 和 legacy 凭证连接同一 broker；随后把 `MQTT_URL` 与四个 `MQTT_TLS_*` 配置切到 8883。再分批切设备；未迁移设备仍通过同一 broker 被平台看见。通过连接数、拒绝日志、presence 和 command ACK 验证每批。
+3. 所有设备切换完成且观察期结束后，关闭 `MQTT_ALLOW_PLAINTEXT_MIGRATION`，再设置 `MQTT_LEGACY_LISTENER_ENABLED=false` 并移除 1883 的网络暴露。
+
+在第 3 步前回滚时，停止本批切换，并以显式迁移开关将设备和平台指回同一 broker 的受认证旧 listener。第 3 步后若需回滚，必须按受控变更重新启用旧 listener，不能通过放宽 mTLS、恢复匿名访问或绕过 ACL 快速处理。迁移账号在切换完成后吊销；开关的启停、负责人和计划关闭时间必须进入变更记录。
 
 ### 多实例
 

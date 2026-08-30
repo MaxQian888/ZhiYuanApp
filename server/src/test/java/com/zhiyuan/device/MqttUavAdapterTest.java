@@ -49,7 +49,8 @@ class MqttUavAdapterTest extends UavAdapterContract {
     @Override
     protected UavAdapter newAdapter() {
         String url = System.getenv("MQTT_URL");
-        adapter = new MqttUavAdapter(url, "zhiyuan-test", "", "", "zhiyuan-test-ingest", TOPIC_ROOT);
+        adapter = new MqttUavAdapter(new MqttConnectionConfiguration(url, "zhiyuan-test", "", "",
+            "zhiyuan-test-ingest", TOPIC_ROOT, null));
         try {
             device = new MqttClient(url, "device-" + UUID.randomUUID(), new MemoryPersistence());
             MqttConnectionOptions options = new MqttConnectionOptions();

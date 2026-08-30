@@ -20,6 +20,7 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
+import javax.net.SocketFactory;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -63,6 +64,7 @@ public class MqttUavAdapter implements UavAdapter, MqttCallback {
     private final String password;
     private final String clientId;
     private final Clock clock;
+    private final SocketFactory socketFactory;
 
     private final List<DeviceEventListener> listeners = new CopyOnWriteArrayList<>();
     private final AtomicLong invalidMessages = new AtomicLong();
@@ -71,21 +73,20 @@ public class MqttUavAdapter implements UavAdapter, MqttCallback {
     private volatile MqttAsyncClient client;
     private volatile PlatformEventBus platformBus;
 
-    public MqttUavAdapter(String serverUri, String clientIdPrefix, String username, String password,
-                          String shareGroup, String topicRoot) {
-        this(serverUri, clientIdPrefix, username, password, shareGroup, topicRoot, Clock.systemUTC());
+    public MqttUavAdapter(MqttConnectionConfiguration configuration) {
+        this(configuration, Clock.systemUTC());
     }
 
-    MqttUavAdapter(String serverUri, String clientIdPrefix, String username, String password,
-                   String shareGroup, String topicRoot, Clock clock) {
-        this.serverUri = serverUri;
-        this.username = username;
-        this.password = password;
-        this.topics = new MqttTopics(topicRoot, shareGroup);
+    MqttUavAdapter(MqttConnectionConfiguration configuration, Clock clock) {
+        this.serverUri = configuration.serverUri();
+        this.username = configuration.username();
+        this.password = configuration.password();
+        this.topics = new MqttTopics(configuration.topicRoot(), configuration.shareGroup());
         this.clock = clock;
+        this.socketFactory = configuration.socketFactory();
         // Unique per instance: two instances sharing a client id would repeatedly evict
         // each other from the broker, which looks exactly like a flapping network.
-        this.clientId = clientIdPrefix + "-" + hostname() + "-" + UUID.randomUUID();
+        this.clientId = configuration.clientIdPrefix() + "-" + hostname() + "-" + UUID.randomUUID();
     }
 
     @Override
@@ -114,6 +115,10 @@ public class MqttUavAdapter implements UavAdapter, MqttCallback {
             // an instance that is gone for good accumulate a session forever.
             options.setSessionExpiryInterval(300L);
             options.setKeepAliveInterval(30);
+            if (socketFactory != null) {
+                options.setSocketFactory(socketFactory);
+                options.setHttpsHostnameVerificationEnabled(true);
+            }
             if (!username.isBlank()) {
                 options.setUserName(username);
                 options.setPassword(password.getBytes(StandardCharsets.UTF_8));

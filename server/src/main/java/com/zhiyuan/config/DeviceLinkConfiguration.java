@@ -1,7 +1,9 @@
 package com.zhiyuan.config;
 
 import com.zhiyuan.device.DeviceRoster;
+import com.zhiyuan.device.MqttConnectionConfiguration;
 import com.zhiyuan.device.MqttUavAdapter;
+import com.zhiyuan.device.MqttTlsConfiguration;
 import com.zhiyuan.device.SimulatorUavAdapter;
 import com.zhiyuan.device.UavAdapter;
 import com.zhiyuan.realtime.InProcessPlatformEventTransport;
@@ -45,13 +47,21 @@ public class DeviceLinkConfiguration {
                                  @Value("${zhiyuan.mqtt.username:}") String username,
                                  @Value("${zhiyuan.mqtt.password:}") String password,
                                  @Value("${zhiyuan.mqtt.share-group:zhiyuan-ingest}") String shareGroup,
-                                 @Value("${zhiyuan.mqtt.topic-root:zhiyuan/v1}") String topicRoot) {
+                                 @Value("${zhiyuan.mqtt.topic-root:zhiyuan/v1}") String topicRoot,
+                                 @Value("${zhiyuan.mqtt.key-store:}") String keyStore,
+                                 @Value("${zhiyuan.mqtt.key-store-password:}") String keyStorePassword,
+                                 @Value("${zhiyuan.mqtt.trust-store:}") String trustStore,
+                                 @Value("${zhiyuan.mqtt.trust-store-password:}")
+                                 String trustStorePassword) {
         if (mqttUrl.isBlank()) {
             log.info("Device link: SIMULATOR (set zhiyuan.mqtt.url to use a real broker)");
             return new SimulatorUavAdapter(roster);
         }
         log.info("Device link: MQTT at {} (share group {})", mqttUrl, shareGroup);
-        return new MqttUavAdapter(mqttUrl, clientIdPrefix, username, password, shareGroup, topicRoot);
+        var tls = new MqttTlsConfiguration(keyStore, keyStorePassword, trustStore,
+            trustStorePassword);
+        return new MqttUavAdapter(new MqttConnectionConfiguration(mqttUrl, clientIdPrefix,
+            username, password, shareGroup, topicRoot, tls.socketFactory()));
     }
 
     @Bean
