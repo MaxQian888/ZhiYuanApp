@@ -60,3 +60,58 @@ export const unavailableAsrAdapter: AsrAdapter = {
     return { stop: () => undefined, abort: () => undefined }
   },
 }
+
+/** Falls back only for provider/network failures, never for denied permission or no speech. */
+export function withAsrFallback(primary: AsrAdapter, fallback: AsrAdapter): AsrAdapter {
+  let preferFallback = false
+  return {
+    name: `${primary.name}+${fallback.name}`,
+    available: () => primary.available() || fallback.available(),
+    async start(options, callbacks) {
+      if (preferFallback && fallback.available()) return fallback.start(options, callbacks)
+      if (!primary.available()) return fallback.start(options, callbacks)
+
+      let active: AsrSession = { stop: () => undefined, abort: () => undefined }
+      let switching = false
+      let aborted = false
+      let stopRequested = false
+      const startFallback = async () => {
+        switching = true
+        active = await fallback.start(options, callbacks)
+        if (aborted) active.abort()
+        else if (stopRequested) active.stop()
+      }
+      const primarySession = await primary.start(options, {
+        onPartial: callbacks.onPartial,
+        onFinal: callbacks.onFinal,
+        onFailure: (failure) => {
+          if ((failure === "network" || failure === "failed") && fallback.available()) {
+            if (stopRequested) {
+              preferFallback = true
+              callbacks.onFailure(failure)
+            } else {
+              void startFallback()
+            }
+          } else {
+            callbacks.onFailure(failure)
+          }
+        },
+        onEnd: () => {
+          if (!switching) callbacks.onEnd()
+        },
+      })
+      if (!switching) active = primarySession
+
+      return {
+        stop: () => {
+          stopRequested = true
+          active.stop()
+        },
+        abort: () => {
+          aborted = true
+          active.abort()
+        },
+      }
+    },
+  }
+}

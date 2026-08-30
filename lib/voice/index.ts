@@ -1,5 +1,6 @@
-import { getAsrGatewayUrl, getAsrProvider } from "@/lib/env"
-import { unavailableAsrAdapter, type AsrAdapter } from "@/lib/voice/asr"
+import { api } from "@/lib/api/client"
+import { getAsrProvider } from "@/lib/env"
+import { unavailableAsrAdapter, withAsrFallback, type AsrAdapter } from "@/lib/voice/asr"
 import { browserAsrAdapter } from "@/lib/voice/browser-asr"
 import { createVolcengineAsrAdapter } from "@/lib/voice/volcengine-asr"
 
@@ -14,6 +15,11 @@ export type { AsrAdapter, AsrCallbacks, AsrFailure, AsrSession } from "@/lib/voi
 export function selectAsrAdapter(): AsrAdapter {
   const provider = getAsrProvider()
   if (provider === "browser") return browserAsrAdapter
-  if (provider === "volcengine") return createVolcengineAsrAdapter(getAsrGatewayUrl())
+  if (provider === "volcengine") {
+    return withAsrFallback(
+      createVolcengineAsrAdapter(() => api.createAsrSession()),
+      browserAsrAdapter
+    )
+  }
   return unavailableAsrAdapter
 }

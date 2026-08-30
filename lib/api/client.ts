@@ -2,6 +2,7 @@ import { z } from "zod"
 import { clearRefreshToken, isTauri, loadRefreshToken, saveRefreshToken } from "@/lib/tauri"
 import {
   alertSchema,
+  asrSessionSchema,
   auditLogSchema,
   addressSchema,
   bindingSchema,
@@ -388,6 +389,7 @@ export const api = {
       `/api/v1/uavs/${uavId}/telemetry?${new URLSearchParams({ from, to, resolution })}`,
       z.array(telemetryPointSchema)
     ),
+  createAsrSession: () => apiRequest("/api/v1/asr/sessions", asrSessionSchema, { method: "POST" }),
   transitionTask: (id: number, target: "FLYING" | "ARRIVED" | "FAILED", failureReason?: string) => {
     const action = { FLYING: "start", ARRIVED: "arrive", FAILED: "fail" }[target]
     return apiRequest(`/api/v1/tasks/${id}/${action}`, taskSchema, {

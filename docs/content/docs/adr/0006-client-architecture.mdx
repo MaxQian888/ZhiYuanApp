@@ -51,11 +51,12 @@ description: React Query 承担全部服务端状态；视图按领域拆分；�
 
 ### 语音识别端口
 
-`AsrAdapter` 定义 `available()` / `start()`，实现有三个：浏览器 Web Speech、火山引擎流式、以及不可用时的空实现。默认仍是浏览器识别 —— 把默认值设成"关闭"等于悄悄删掉一个正在工作的功能。
+`AsrAdapter` 定义 `available()` / `start()`，实现有三个：浏览器 Web Speech、火山引擎服务端网关、以及不可用时的空实现。默认仍是浏览器识别 —— 把默认值设成"关闭"等于悄悄删掉一个正在工作的功能。
 
 **音频只在内存中流转**：录制分片直接写进 socket 就丢弃，不落盘、不留存、不缓冲成 blob 数组，会话结束立即 `track.stop()`。操作员的语音是调度流量，不是语料。
 
 浏览器不直连火山引擎，而是连我们自己的网关：签名所需的凭据是服务端密钥，静态导出的包里放不下秘密。
+网关协议保留 `partial` / `final` 两种事件；当前火山 Flash 上游只产生 `final`，浏览器原生识别仍可产生 `partial`，任何实现都只有 `final` 会进入目标解析。
 
 ### Tauri CSP 精确白名单
 
@@ -78,4 +79,4 @@ description: React Query 承担全部服务端状态；视图按领域拆分；�
 - 新增视图时必须放进 `components/product/views/`，并在 `product-page.tsx` 的映射里登记。
 - 任何需要坐标的新代码都必须经过 `MapProvider`；直接 import `lib/map/coordinates.ts` 视为破坏边界。
 - 高德地图图层在配置 `NEXT_PUBLIC_AMAP_KEY` 后按需加载 JS API 2.0；生产环境还应配置只暴露代理地址的 `NEXT_PUBLIC_AMAP_SERVICE_HOST`，并按 `README-csp.md` 追加 CSP 来源。无 key 时界面明确显示为开发网格。
-- 火山引擎 ASR 需要一个服务端网关来签名上游连接，该网关尚未实现。
+- 火山引擎 ASR 通过 `POST /api/v1/asr/sessions` 领取 30 秒一次性票据，再连接平台 WebSocket；浏览器只上传 16 kHz PCM，服务端在内存中封装 WAV 并调用火山识别接口。票据哈希落库以支持多实例原子消费，音频在 15 秒硬上限内只驻留内存，完成、超时或断线后清零。未启用或调用失败时仍保留浏览器原生识别与文本输入降级。

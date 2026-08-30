@@ -26,6 +26,7 @@ class ProductionConfigGuardTest {
         settings.put("zhiyuan.simulator-enabled", "false");
         settings.put("zhiyuan.telemetry.archive-required", "true");
         settings.put("zhiyuan.clickhouse.url", "https://clickhouse.internal:8443");
+        settings.put("zhiyuan.asr.enabled", "false");
         settings.put("zhiyuan.mqtt.url", "ssl://mqtt.internal:8883");
         settings.put("zhiyuan.mqtt.topic-root", "zhiyuan/v1");
         settings.put("zhiyuan.mqtt.key-store", "/run/secrets/platform-mqtt.p12");
@@ -181,6 +182,30 @@ class ProductionConfigGuardTest {
         Map<String, String> settings = production();
         settings.put("zhiyuan.telemetry.archive-required", "false");
         settings.remove("zhiyuan.clickhouse.url");
+
+        assertThat(check(settings)).isEmpty();
+    }
+
+    @Test
+    void rejectsAnEnabledAsrGatewayWithoutTlsOrProviderCredentials() {
+        Map<String, String> settings = production();
+        settings.put("zhiyuan.asr.enabled", "true");
+        settings.put("zhiyuan.asr.public-websocket-url", "ws://api.internal/api/v1/asr/ws");
+        settings.put("zhiyuan.asr.endpoint", "http://openspeech.internal/recognize");
+
+        assertThat(check(settings)).hasSize(3)
+            .anySatisfy(problem -> assertThat(problem).contains("ASR_PUBLIC_WEBSOCKET_URL"))
+            .anySatisfy(problem -> assertThat(problem).contains("VOLCENGINE_ASR_ENDPOINT"))
+            .anySatisfy(problem -> assertThat(problem).contains("VOLCENGINE_ASR"));
+    }
+
+    @Test
+    void acceptsAnEnabledAsrGatewayWithNewConsoleCredentials() {
+        Map<String, String> settings = production();
+        settings.put("zhiyuan.asr.enabled", "true");
+        settings.put("zhiyuan.asr.public-websocket-url", "wss://api.example/api/v1/asr/ws");
+        settings.put("zhiyuan.asr.endpoint", "https://openspeech.bytedance.com/recognize");
+        settings.put("zhiyuan.asr.api-key", "server-side-key");
 
         assertThat(check(settings)).isEmpty();
     }

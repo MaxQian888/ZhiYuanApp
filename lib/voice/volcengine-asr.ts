@@ -1,37 +1,18 @@
 import type { AsrAdapter, AsrCallbacks, AsrFailure, AsrSession } from "@/lib/voice/asr"
 
-/**
- * Volcengine (火山引擎) streaming speech recognition.
- *
- * The browser does not talk to Volcengine directly. It opens a websocket to our own gateway,
- * which holds the Volcengine app id and token and signs the upstream connection. Those are
- * server-side secrets and this app is a static export — a `NEXT_PUBLIC_` variable holding
- * them would be sitting in the bundle for anyone to read.
- *
- * The gateway protocol is deliberately small, because both ends of it are ours:
- *
- * ```
- * client → {"type":"start","locale":"zh-CN","mimeType":"audio/webm;codecs=opus"}
- * client → <binary audio frame>            repeated while capturing
- * client → {"type":"stop"}
- * server → {"type":"partial","text":"无人机一号"}
- * server → {"type":"final","text":"无人机一号起飞"}
- * server → {"type":"error","reason":"network"}
- * ```
- *
- * **Audio is streamed, never accumulated.** Each chunk the recorder produces is written to
- * the socket and then dropped; no array of blobs is kept, nothing is written to storage, and
- * the microphone tracks are stopped the moment the session ends — which is also what turns
- * off the browser's recording indicator, so the operator can see that capture really stopped.
- */
+export interface AsrGatewaySession {
+  websocketUrl: string
+}
 
-const CHUNK_INTERVAL_MS = 250
+export type AsrSessionFactory = () => Promise<AsrGatewaySession>
 
 interface GatewayMessage {
   type?: string
   text?: string
   reason?: string
 }
+
+type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext }
 
 function classify(reason: string | undefined): AsrFailure {
   if (reason === "permission-denied" || reason === "network" || reason === "no-speech") {
@@ -40,18 +21,42 @@ function classify(reason: string | undefined): AsrFailure {
   return "failed"
 }
 
-export function createVolcengineAsrAdapter(gatewayUrl: string | undefined): AsrAdapter {
+function audioContextConstructor() {
+  if (typeof window === "undefined") return undefined
+  return window.AudioContext ?? (window as WebkitWindow).webkitAudioContext
+}
+
+/** Downsamples browser audio and encodes signed 16-bit little-endian PCM. */
+export function pcm16(input: Float32Array, sourceRate: number, targetRate = 16_000) {
+  const ratio = sourceRate / targetRate
+  const length = Math.max(1, Math.floor(input.length / ratio))
+  const output = new ArrayBuffer(length * 2)
+  const view = new DataView(output)
+  for (let index = 0; index < length; index++) {
+    const sample = Math.max(
+      -1,
+      Math.min(1, input[Math.min(input.length - 1, Math.floor(index * ratio))])
+    )
+    view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+  }
+  return output
+}
+
+export function createVolcengineAsrAdapter(
+  createSession: AsrSessionFactory | undefined
+): AsrAdapter {
   return {
     name: "VOLCENGINE",
 
     available: () =>
-      Boolean(gatewayUrl) &&
-      typeof window !== "undefined" &&
-      typeof window.MediaRecorder !== "undefined" &&
+      Boolean(createSession) &&
+      Boolean(audioContextConstructor()) &&
+      typeof navigator !== "undefined" &&
       Boolean(navigator.mediaDevices?.getUserMedia),
 
     async start({ locale }, callbacks: AsrCallbacks): Promise<AsrSession> {
-      if (!gatewayUrl) {
+      const AudioContextType = audioContextConstructor()
+      if (!createSession || !AudioContextType) {
         callbacks.onFailure("unsupported")
         callbacks.onEnd()
         return inert()
@@ -66,26 +71,37 @@ export function createVolcengineAsrAdapter(gatewayUrl: string | undefined): AsrA
         return inert()
       }
 
-      let closed = false
-      let abandoned = false
-      const socket = new WebSocket(gatewayUrl)
-      socket.binaryType = "arraybuffer"
-      const recorder = new MediaRecorder(stream)
+      let reservation: AsrGatewaySession
+      try {
+        reservation = await createSession()
+      } catch {
+        stream.getTracks().forEach((track) => track.stop())
+        callbacks.onFailure("network")
+        callbacks.onEnd()
+        return inert()
+      }
 
-      /**
-       * Every exit path runs through here. Releasing the microphone matters more than
-       * anything else in this function: a leaked track keeps the operator's recording
-       * indicator lit and the microphone live after the console thinks it stopped.
-       */
+      const context = new AudioContextType()
+      const source = context.createMediaStreamSource(stream)
+      const processor = context.createScriptProcessor(4096, 1, 1)
+      const socket = new WebSocket(reservation.websocketUrl)
+      socket.binaryType = "arraybuffer"
+      let closed = false
+      let captureStopped = false
+
+      const stopCapture = () => {
+        if (captureStopped) return
+        captureStopped = true
+        processor.disconnect()
+        source.disconnect()
+        stream.getTracks().forEach((track) => track.stop())
+        void context.close()
+      }
+
       const shutdown = () => {
         if (closed) return
         closed = true
-        try {
-          if (recorder.state !== "inactive") recorder.stop()
-        } catch {
-          // Already stopped; nothing to unwind.
-        }
-        stream.getTracks().forEach((track) => track.stop())
+        stopCapture()
         if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
           socket.close()
         }
@@ -93,23 +109,29 @@ export function createVolcengineAsrAdapter(gatewayUrl: string | undefined): AsrA
       }
 
       socket.onopen = () => {
-        socket.send(JSON.stringify({ type: "start", locale, mimeType: recorder.mimeType }))
-        recorder.start(CHUNK_INTERVAL_MS)
+        socket.send(
+          JSON.stringify({
+            type: "start",
+            locale: locale === "zh-CN" ? "zh-CN" : "en",
+            mimeType: "audio/pcm;rate=16000",
+          })
+        )
+        source.connect(processor)
+        processor.connect(context.destination)
       }
 
-      recorder.ondataavailable = async (event) => {
-        // Sent and forgotten. The chunk is not appended to anything.
-        if (!event.data.size || socket.readyState !== WebSocket.OPEN) return
-        socket.send(await event.data.arrayBuffer())
+      processor.onaudioprocess = (event) => {
+        if (captureStopped || socket.readyState !== WebSocket.OPEN) return
+        socket.send(pcm16(event.inputBuffer.getChannelData(0), context.sampleRate))
       }
 
       socket.onmessage = (event) => {
-        if (abandoned || typeof event.data !== "string") return
+        if (closed || typeof event.data !== "string") return
         let message: GatewayMessage
         try {
           message = JSON.parse(event.data) as GatewayMessage
         } catch {
-          return // A frame we cannot read is not worth tearing the session down for.
+          return
         }
         if (message.type === "partial" && message.text) callbacks.onPartial?.(message.text)
         else if (message.type === "final" && message.text) {
@@ -122,19 +144,17 @@ export function createVolcengineAsrAdapter(gatewayUrl: string | undefined): AsrA
       }
 
       socket.onerror = () => {
-        if (!abandoned) callbacks.onFailure("network")
+        if (!closed) callbacks.onFailure("network")
         shutdown()
       }
       socket.onclose = () => shutdown()
 
       return {
         stop: () => {
-          if (recorder.state !== "inactive") recorder.stop()
+          stopCapture()
           if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "stop" }))
-          // The socket stays open briefly so the final transcript can still arrive.
         },
         abort: () => {
-          abandoned = true
           shutdown()
         },
       }

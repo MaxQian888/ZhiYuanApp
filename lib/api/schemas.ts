@@ -42,6 +42,11 @@ export const mfaEnrolmentSchema = z.object({
 })
 
 export const recoveryCodesSchema = z.object({ recoveryCodes: z.array(z.string()) })
+export const asrSessionSchema = z.object({
+  sessionId: z.string().uuid(),
+  websocketUrl: z.string().url(),
+  expiresAt: dateTime,
+})
 
 export const uavStatusSchema = z.enum(["ONLINE", "OFFLINE", "FLYING", "CHARGING"])
 export const uavSchema = z.object({

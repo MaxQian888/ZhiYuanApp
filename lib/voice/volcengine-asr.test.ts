@@ -1,9 +1,10 @@
-import { createVolcengineAsrAdapter } from "@/lib/voice/volcengine-asr"
 import { selectAsrAdapter } from "@/lib/voice"
+import { unavailableAsrAdapter, withAsrFallback, type AsrCallbacks } from "@/lib/voice/asr"
 import { browserAsrAdapter } from "@/lib/voice/browser-asr"
-import { unavailableAsrAdapter, type AsrCallbacks } from "@/lib/voice/asr"
+import { createVolcengineAsrAdapter, pcm16 } from "@/lib/voice/volcengine-asr"
 
-const GATEWAY = "wss://asr.test/stream"
+const GATEWAY = "wss://asr.test/api/v1/asr/ws?session=opaque"
+const reserve = jest.fn(async () => ({ websocketUrl: GATEWAY }))
 
 class FakeSocket {
   static last: FakeSocket | undefined
@@ -34,26 +35,40 @@ class FakeSocket {
   }
 }
 
-class FakeRecorder {
-  static last: FakeRecorder | undefined
-  state = "inactive"
-  mimeType = "audio/webm;codecs=opus"
-  ondataavailable: ((event: { data: Blob }) => void) | null = null
-  start = jest.fn(() => {
-    this.state = "recording"
-  })
-  stop = jest.fn(() => {
-    this.state = "inactive"
-  })
+class FakeProcessor {
+  onaudioprocess:
+    ((event: { inputBuffer: { getChannelData: () => Float32Array } }) => void) | null = null
+  connect = jest.fn()
+  disconnect = jest.fn()
+  emit(samples: Float32Array) {
+    this.onaudioprocess?.({ inputBuffer: { getChannelData: () => samples } })
+  }
+}
+
+class FakeSource {
+  connect = jest.fn()
+  disconnect = jest.fn()
+}
+
+class FakeAudioContext {
+  static last: FakeAudioContext | undefined
+  sampleRate = 48_000
+  destination = {}
+  source = new FakeSource()
+  processor = new FakeProcessor()
+  close = jest.fn(async () => undefined)
+  createMediaStreamSource = jest.fn(() => this.source)
+  createScriptProcessor = jest.fn(() => this.processor)
   constructor() {
-    FakeRecorder.last = this
+    FakeAudioContext.last = this
   }
 }
 
 const track = { stop: jest.fn() }
 const stream = { getTracks: () => [track] }
+const scope = globalThis as unknown as Record<string, unknown>
 
-function spyCallbacks(): AsrCallbacks & Record<string, jest.Mock> {
+function callbacks(): AsrCallbacks & Record<string, jest.Mock> {
   return {
     onPartial: jest.fn(),
     onFinal: jest.fn(),
@@ -62,14 +77,13 @@ function spyCallbacks(): AsrCallbacks & Record<string, jest.Mock> {
   } as AsrCallbacks & Record<string, jest.Mock>
 }
 
-const scope = globalThis as unknown as Record<string, unknown>
-
 beforeEach(() => {
   track.stop.mockClear()
+  reserve.mockClear()
   FakeSocket.last = undefined
-  FakeRecorder.last = undefined
+  FakeAudioContext.last = undefined
   scope.WebSocket = FakeSocket
-  scope.MediaRecorder = FakeRecorder
+  scope.AudioContext = FakeAudioContext
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
     value: { getUserMedia: jest.fn(async () => stream) },
@@ -77,158 +91,204 @@ beforeEach(() => {
 })
 
 describe("createVolcengineAsrAdapter", () => {
-  it("is unavailable without a gateway, because the browser never reaches Volcengine directly", () => {
+  it("is available only with a session factory and PCM capture runtime", () => {
     expect(createVolcengineAsrAdapter(undefined).available()).toBe(false)
-    expect(createVolcengineAsrAdapter(GATEWAY).available()).toBe(true)
+    expect(createVolcengineAsrAdapter(reserve).available()).toBe(true)
   })
 
-  it("fails cleanly when started with no gateway configured", async () => {
-    const callbacks = spyCallbacks()
-    await createVolcengineAsrAdapter(undefined).start({ locale: "zh-CN" }, callbacks)
-    expect(callbacks.onFailure).toHaveBeenCalledWith("unsupported")
-    expect(callbacks.onEnd).toHaveBeenCalled()
-  })
-
-  it("reports a declined microphone as permission-denied and opens no socket", async () => {
+  it("reports a declined microphone without reserving a gateway ticket", async () => {
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
-      value: {
-        getUserMedia: jest.fn(async () => {
-          throw new Error("denied")
-        }),
-      },
+      value: { getUserMedia: jest.fn(async () => Promise.reject(new Error("denied"))) },
     })
-    const callbacks = spyCallbacks()
+    const spy = callbacks()
 
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
+    await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, spy)
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("permission-denied")
+    expect(spy.onFailure).toHaveBeenCalledWith("permission-denied")
+    expect(reserve).not.toHaveBeenCalled()
+  })
+
+  it("releases the microphone when the authenticated session reservation fails", async () => {
+    const spy = callbacks()
+    await createVolcengineAsrAdapter(async () => Promise.reject(new Error("offline"))).start(
+      { locale: "zh-CN" },
+      spy
+    )
+
+    expect(track.stop).toHaveBeenCalled()
+    expect(spy.onFailure).toHaveBeenCalledWith("network")
     expect(FakeSocket.last).toBeUndefined()
   })
 
-  it("announces the session before recording starts", async () => {
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, spyCallbacks())
+  it("announces 16 kHz PCM before connecting the capture graph", async () => {
+    await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, callbacks())
     FakeSocket.last!.open()
 
-    expect(JSON.parse(FakeSocket.last!.sent[0] as string)).toMatchObject({
+    expect(JSON.parse(FakeSocket.last!.sent[0] as string)).toEqual({
       type: "start",
       locale: "zh-CN",
-      mimeType: "audio/webm;codecs=opus",
+      mimeType: "audio/pcm;rate=16000",
     })
-    expect(FakeRecorder.last!.start).toHaveBeenCalledWith(250)
+    expect(FakeAudioContext.last!.source.connect).toHaveBeenCalled()
   })
 
-  it("streams each audio chunk straight to the socket without retaining it", async () => {
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, spyCallbacks())
+  it("downsamples each audio callback and sends it without retaining a recording", async () => {
+    await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, callbacks())
     FakeSocket.last!.open()
-    const buffer = new ArrayBuffer(8)
+    FakeAudioContext.last!.processor.emit(new Float32Array([1, 0.5, 0, -0.5, -1, 0]))
 
-    await FakeRecorder.last!.ondataavailable!({
-      data: { size: 8, arrayBuffer: async () => buffer } as Blob,
-    })
-
-    expect(FakeSocket.last!.sent).toContain(buffer)
+    const audio = FakeSocket.last!.sent.at(-1)
+    expect(audio).toBeInstanceOf(ArrayBuffer)
+    expect((audio as ArrayBuffer).byteLength).toBe(4)
   })
 
-  it("drops an empty chunk rather than sending a zero-length frame", async () => {
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, spyCallbacks())
-    FakeSocket.last!.open()
-    const before = FakeSocket.last!.sent.length
-
-    await FakeRecorder.last!.ondataavailable!({
-      data: { size: 0, arrayBuffer: async () => new ArrayBuffer(0) } as Blob,
-    })
-
-    expect(FakeSocket.last!.sent).toHaveLength(before)
-  })
-
-  it("surfaces partial transcripts and settles on the final one", async () => {
-    const callbacks = spyCallbacks()
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
+  it("surfaces partial text, settles on final text, and releases capture", async () => {
+    const spy = callbacks()
+    await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, spy)
     FakeSocket.last!.open()
 
     FakeSocket.last!.deliver({ type: "partial", text: "无人机一号" })
-    expect(callbacks.onPartial).toHaveBeenCalledWith("无人机一号")
-
-    FakeSocket.last!.deliver({ type: "final", text: "无人机一号起飞" })
-    expect(callbacks.onFinal).toHaveBeenCalledWith("无人机一号起飞")
-  })
-
-  it("releases the microphone as soon as the session settles", async () => {
-    // A leaked track keeps the browser's recording indicator lit after the console believes
-    // capture has stopped — the one failure an operator cannot debug.
-    const callbacks = spyCallbacks()
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
-    FakeSocket.last!.open()
-
     FakeSocket.last!.deliver({ type: "final", text: "无人机一号起飞" })
 
+    expect(spy.onPartial).toHaveBeenCalledWith("无人机一号")
+    expect(spy.onFinal).toHaveBeenCalledWith("无人机一号起飞")
     expect(track.stop).toHaveBeenCalled()
-    expect(FakeRecorder.last!.stop).toHaveBeenCalled()
-    expect(FakeSocket.last!.close).toHaveBeenCalled()
-    expect(callbacks.onEnd).toHaveBeenCalledTimes(1)
+    expect(spy.onEnd).toHaveBeenCalledTimes(1)
   })
 
-  it("releases the microphone when the session is aborted mid-capture", async () => {
-    const callbacks = spyCallbacks()
-    const session = await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
-    FakeSocket.last!.open()
-
-    session.abort()
-
-    expect(track.stop).toHaveBeenCalled()
-    expect(callbacks.onEnd).toHaveBeenCalledTimes(1)
-  })
-
-  it("reports a gateway error and a socket failure as distinct outcomes", async () => {
-    const callbacks = spyCallbacks()
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
-    FakeSocket.last!.open()
-
-    FakeSocket.last!.deliver({ type: "error", reason: "no-speech" })
-    expect(callbacks.onFailure).toHaveBeenCalledWith("no-speech")
-
-    const second = spyCallbacks()
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, second)
-    FakeSocket.last!.open()
-    FakeSocket.last!.onerror?.()
-    expect(second.onFailure).toHaveBeenCalledWith("network")
-  })
-
-  it("maps an unrecognised gateway reason onto the generic failure", async () => {
-    const callbacks = spyCallbacks()
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
-    FakeSocket.last!.open()
-
-    FakeSocket.last!.deliver({ type: "error", reason: "quota-exceeded" })
-
-    expect(callbacks.onFailure).toHaveBeenCalledWith("failed")
-  })
-
-  it("ignores a frame it cannot read instead of tearing the session down", async () => {
-    const callbacks = spyCallbacks()
-    await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
-    FakeSocket.last!.open()
-
-    FakeSocket.last!.onmessage?.({ data: "{not json" })
-    FakeSocket.last!.onmessage?.({ data: new ArrayBuffer(4) })
-
-    expect(callbacks.onFailure).not.toHaveBeenCalled()
-    expect(callbacks.onEnd).not.toHaveBeenCalled()
-  })
-
-  it("asks the gateway to finish when stopped, keeping the socket open for the final result", async () => {
-    const callbacks = spyCallbacks()
-    const session = await createVolcengineAsrAdapter(GATEWAY).start({ locale: "zh-CN" }, callbacks)
+  it("stops capture while leaving the socket open for the final transcript", async () => {
+    const spy = callbacks()
+    const session = await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, spy)
     FakeSocket.last!.open()
 
     session.stop()
 
+    expect(track.stop).toHaveBeenCalled()
     expect(JSON.parse(FakeSocket.last!.sent.at(-1) as string)).toEqual({ type: "stop" })
-    expect(callbacks.onEnd).not.toHaveBeenCalled()
+    expect(spy.onEnd).not.toHaveBeenCalled()
+  })
 
-    FakeSocket.last!.deliver({ type: "final", text: "无人机一号起飞" })
-    expect(callbacks.onFinal).toHaveBeenCalledWith("无人机一号起飞")
+  it("aborts without accepting a later transcript", async () => {
+    const spy = callbacks()
+    const session = await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, spy)
+    FakeSocket.last!.open()
+
+    session.abort()
+    FakeSocket.last!.deliver({ type: "final", text: "ignored" })
+
+    expect(spy.onFinal).not.toHaveBeenCalled()
+    expect(spy.onEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it("maps declared and transport failures without exposing provider details", async () => {
+    const declared = callbacks()
+    await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, declared)
+    FakeSocket.last!.open()
+    FakeSocket.last!.deliver({ type: "error", reason: "no-speech" })
+    expect(declared.onFailure).toHaveBeenCalledWith("no-speech")
+
+    const transport = callbacks()
+    await createVolcengineAsrAdapter(reserve).start({ locale: "zh-CN" }, transport)
+    FakeSocket.last!.open()
+    FakeSocket.last!.onerror?.()
+    expect(transport.onFailure).toHaveBeenCalledWith("network")
+  })
+})
+
+describe("pcm16", () => {
+  it("emits signed little-endian samples at the target rate", () => {
+    const pcm = new DataView(pcm16(new Float32Array([-1, 0, 1, 0]), 32_000))
+    expect(pcm.getInt16(0, true)).toBe(-32768)
+    expect(pcm.getInt16(2, true)).toBe(32767)
+  })
+})
+
+describe("withAsrFallback", () => {
+  it("falls back to browser recognition after a gateway network failure", async () => {
+    const spy = callbacks()
+    const fallback = {
+      name: "BROWSER",
+      available: () => true,
+      start: jest.fn(async (_options: { locale: string }, next: AsrCallbacks) => {
+        next.onFinal("浏览器结果")
+        next.onEnd()
+        return { stop: jest.fn(), abort: jest.fn() }
+      }),
+    }
+    const primary = {
+      name: "VOLCENGINE",
+      available: () => true,
+      start: async (_options: { locale: string }, next: AsrCallbacks) => {
+        next.onFailure("network" as const)
+        next.onEnd()
+        return { stop: jest.fn(), abort: jest.fn() }
+      },
+    }
+
+    await withAsrFallback(primary, fallback).start({ locale: "zh-CN" }, spy)
+    await Promise.resolve()
+
+    expect(fallback.start).toHaveBeenCalled()
+    expect(spy.onFinal).toHaveBeenCalledWith("浏览器结果")
+    expect(spy.onFailure).not.toHaveBeenCalled()
+    expect(spy.onEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it("surfaces a post-stop failure and prefers browser recognition on the next attempt", async () => {
+    const spy = callbacks()
+    let primaryCallbacks: AsrCallbacks | undefined
+    const primaryStop = jest.fn()
+    const primary = {
+      name: "VOLCENGINE",
+      available: () => true,
+      start: async (_options: { locale: string }, next: AsrCallbacks) => {
+        primaryCallbacks = next
+        return { stop: primaryStop, abort: jest.fn() }
+      },
+    }
+    const fallback = {
+      name: "BROWSER",
+      available: () => true,
+      start: jest.fn(async () => ({ stop: jest.fn(), abort: jest.fn() })),
+    }
+    const adapter = withAsrFallback(primary, fallback)
+
+    const first = await adapter.start({ locale: "zh-CN" }, spy)
+    first.stop()
+    primaryCallbacks!.onFailure("network")
+    primaryCallbacks!.onEnd()
+
+    expect(spy.onFailure).toHaveBeenCalledWith("network")
+    expect(fallback.start).not.toHaveBeenCalled()
+
+    await adapter.start({ locale: "zh-CN" }, callbacks())
+    expect(fallback.start).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not hide permission failures and delegates abort to the active primary session", async () => {
+    const spy = callbacks()
+    const abort = jest.fn()
+    const primary = {
+      name: "VOLCENGINE",
+      available: () => true,
+      start: async (_options: { locale: string }, next: AsrCallbacks) => {
+        next.onFailure("permission-denied" as const)
+        return { stop: jest.fn(), abort }
+      },
+    }
+    const fallback = {
+      name: "BROWSER",
+      available: () => true,
+      start: jest.fn(async () => ({ stop: jest.fn(), abort: jest.fn() })),
+    }
+
+    const session = await withAsrFallback(primary, fallback).start({ locale: "zh-CN" }, spy)
+    session.abort()
+
+    expect(spy.onFailure).toHaveBeenCalledWith("permission-denied")
+    expect(fallback.start).not.toHaveBeenCalled()
+    expect(abort).toHaveBeenCalled()
   })
 })
 
@@ -239,21 +299,17 @@ describe("selectAsrAdapter", () => {
     process.env = originalEnv
   })
 
-  it("defaults to the browser recogniser, which is what the console has always used", () => {
+  it("defaults to the browser recogniser", () => {
     process.env = { ...originalEnv, NEXT_PUBLIC_ASR_PROVIDER: undefined }
     expect(selectAsrAdapter()).toBe(browserAsrAdapter)
   })
 
-  it("opts into Volcengine when configured", () => {
-    process.env = {
-      ...originalEnv,
-      NEXT_PUBLIC_ASR_PROVIDER: "volcengine",
-      NEXT_PUBLIC_ASR_GATEWAY_URL: GATEWAY,
-    }
-    expect(selectAsrAdapter().name).toBe("VOLCENGINE")
+  it("opts into the authenticated server gateway", () => {
+    process.env = { ...originalEnv, NEXT_PUBLIC_ASR_PROVIDER: "volcengine" }
+    expect(selectAsrAdapter().name).toBe("VOLCENGINE+BROWSER")
   })
 
-  it("can be turned off entirely, leaving the typed fallback", () => {
+  it("can be turned off entirely", () => {
     process.env = { ...originalEnv, NEXT_PUBLIC_ASR_PROVIDER: "none" }
     expect(selectAsrAdapter()).toBe(unavailableAsrAdapter)
   })

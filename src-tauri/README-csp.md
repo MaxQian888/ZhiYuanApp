@@ -53,9 +53,9 @@ merges only the required AMap sources into a build-time CSP overlay, and leaves
 `tauri.conf.json` unchanged. The normal `pnpm tauri build` remains the strict no-map rollback
 path. Insecure or credential-bearing deployment URLs are rejected before the build starts.
 
-The ASR entry is our own gateway, not Volcengine: the browser never connects to Volcengine
-directly, because the credentials that sign that connection are server-side. See
-`lib/voice/volcengine-asr.ts`.
+The ASR entry is our own gateway, not Volcengine: the browser first reserves an authenticated,
+one-time session over the platform API and never connects to Volcengine directly. Provider
+credentials remain server-side. See `lib/voice/volcengine-asr.ts`.
 
 ## Directives that are not `'none'`, and why
 

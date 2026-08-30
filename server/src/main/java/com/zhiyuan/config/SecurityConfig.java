@@ -34,7 +34,7 @@ public class SecurityConfig {
     @Bean
     CorsConfigurationSource corsConfigurationSource(@Value("${zhiyuan.cors-origins}") String origins) {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.stream(origins.split(",")).map(String::trim).toList());
+        configuration.setAllowedOrigins(parseOrigins(origins));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept",
             "Last-Event-ID", "X-Refresh-Token", "Idempotency-Key"));
@@ -42,6 +42,11 @@ public class SecurityConfig {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    static List<String> parseOrigins(String origins) {
+        return Arrays.stream(origins.split(",")).map(String::trim)
+            .filter(origin -> !origin.isBlank()).toList();
     }
 
     @Bean
@@ -52,7 +57,7 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
-                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/auth/mfa/verify", "/api/v1/system/about", "/api/v1/system/version").permitAll()
+                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/auth/mfa/verify", "/api/v1/system/about", "/api/v1/system/version", "/api/v1/asr/ws").permitAll()
                 // Probes must answer before anyone is authenticated — a readiness check that
                 // needs a token cannot be used by the thing deciding whether to send traffic
                 // here. These two groups are configured to report a bare status, so being

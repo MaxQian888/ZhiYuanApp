@@ -57,14 +57,3 @@ export function getAsrProvider(): "browser" | "volcengine" | "none" {
   if (configured === "volcengine" || configured === "none") return configured
   return "browser"
 }
-
-/**
- * Where the browser opens its ASR websocket.
- *
- * This is our own backend, not Volcengine directly: the Volcengine credentials are
- * server-side secrets, so the server signs and proxies the upstream connection. A public env
- * var pointing straight at Volcengine would mean shipping the app key in the bundle.
- */
-export function getAsrGatewayUrl(): string | undefined {
-  return process.env.NEXT_PUBLIC_ASR_GATEWAY_URL || undefined
-}

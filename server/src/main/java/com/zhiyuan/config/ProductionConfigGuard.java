@@ -1,6 +1,7 @@
 package com.zhiyuan.config;
 
 import com.zhiyuan.device.MqttTopics;
+import com.zhiyuan.asr.VolcengineCredentials;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationPreparedEvent;
@@ -86,6 +87,22 @@ public class ProductionConfigGuard
             && isBlank(property.apply("zhiyuan.clickhouse.url"))) {
             problems.add("TELEMETRY_ARCHIVE_REQUIRED is true but CLICKHOUSE_URL is unset, so the"
                 + " archive that is declared mandatory does not exist.");
+        }
+        if (Boolean.parseBoolean(property.apply("zhiyuan.asr.enabled"))) {
+            String websocketUrl = property.apply("zhiyuan.asr.public-websocket-url");
+            if (websocketUrl == null || !websocketUrl.startsWith("wss://")) {
+                problems.add("ASR_PUBLIC_WEBSOCKET_URL must use wss:// when ASR is enabled.");
+            }
+            String endpoint = property.apply("zhiyuan.asr.endpoint");
+            if (endpoint == null || !endpoint.startsWith("https://")) {
+                problems.add("VOLCENGINE_ASR_ENDPOINT must use https:// when ASR is enabled.");
+            }
+            var credentials = new VolcengineCredentials(property.apply("zhiyuan.asr.api-key"),
+                property.apply("zhiyuan.asr.app-key"), property.apply("zhiyuan.asr.access-key"));
+            if (!credentials.configured()) {
+                problems.add("VOLCENGINE_ASR_API_KEY or both VOLCENGINE_ASR_APP_KEY and"
+                    + " VOLCENGINE_ASR_ACCESS_KEY are required when ASR is enabled.");
+            }
         }
         String mqttUrl = property.apply("zhiyuan.mqtt.url");
         if (isBlank(mqttUrl)) {

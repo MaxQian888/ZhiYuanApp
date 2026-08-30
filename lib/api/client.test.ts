@@ -777,6 +777,21 @@ describe("API boundary · customers, goods, orders and tasks", () => {
     )
   })
 
+  it("reserves an authenticated one-time ASR gateway session", async () => {
+    const session = {
+      sessionId: "72e9c2ce-27a8-4e3d-9db9-af72b6ea0995",
+      websocketUrl: "wss://api.test/api/v1/asr/ws?session=opaque",
+      expiresAt: "2026-08-30T16:00:30Z",
+    }
+    const fetchMock = mockFetch(ok(session))
+
+    await expect(api.createAsrSession()).resolves.toEqual(session)
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE}/api/v1/asr/sessions`,
+      expect.objectContaining({ method: "POST" })
+    )
+  })
+
   it("reads the updater version descriptor", async () => {
     mockFetch(ok({ configured: true, currentVersion: "0.1.0", manifestUrl: "https://example" }))
     await expect(api.version()).resolves.toMatchObject({ configured: true })
