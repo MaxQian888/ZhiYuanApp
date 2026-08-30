@@ -346,9 +346,23 @@ describe("MapView", () => {
   it("plots the selected device and its track", () => {
     renderView("map")
     expect(screen.getByRole("heading", { name: "地图定位" })).toBeInTheDocument()
+    expect(screen.getByText(/开发网格（非真实地图）/)).toBeInTheDocument()
+    expect(screen.getByText(/TEST MAP PROVIDER/)).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "地图定位: UAV-01" })).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "UAV-01 飞行轨迹" })).toBeInTheDocument()
     expect(screen.getByText("当前位置")).toBeInTheDocument()
+  })
+
+  it("switches to the real AMap surface when a key is configured", () => {
+    process.env.NEXT_PUBLIC_AMAP_KEY = "test-web-key"
+    try {
+      renderView("map")
+      expect(screen.getByText(/高德地图实景图层/)).toBeInTheDocument()
+      expect(screen.getByText("正在加载高德地图…")).toBeInTheDocument()
+      expect(screen.queryByText(/开发网格（非真实地图）/)).not.toBeInTheDocument()
+    } finally {
+      delete process.env.NEXT_PUBLIC_AMAP_KEY
+    }
   })
 
   it("switches the plotted device", async () => {

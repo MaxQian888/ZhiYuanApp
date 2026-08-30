@@ -1,4 +1,4 @@
-import { getPublicEnv } from "./env"
+import { getAmapServiceHost, getPublicEnv } from "./env"
 
 describe("getPublicEnv", () => {
   const originalEnv = process.env
@@ -26,5 +26,10 @@ describe("getPublicEnv", () => {
   it("throws when NEXT_PUBLIC_APP_NAME is missing", () => {
     delete process.env.NEXT_PUBLIC_APP_NAME
     expect(() => getPublicEnv()).toThrow(/NEXT_PUBLIC_APP_NAME/)
+  })
+
+  it("exposes only the AMap security proxy URL", () => {
+    process.env.NEXT_PUBLIC_AMAP_SERVICE_HOST = "https://maps.test/_AMapService"
+    expect(getAmapServiceHost()).toBe("https://maps.test/_AMapService")
   })
 })

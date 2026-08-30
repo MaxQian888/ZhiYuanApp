@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { Crosshair, Minus, Plane, Plus } from "lucide-react"
 import { useMemo, useState } from "react"
+import { AmapSurface } from "@/components/product/map/amap-surface"
 import { Button } from "@/components/ui/button"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Spinner } from "@/components/ui/spinner"
@@ -10,9 +11,16 @@ import { ActionTooltip, PageHeader, StatusPill } from "@/components/product/prim
 import { QueryLoading, useUrlId } from "@/components/product/view-kit"
 import { api } from "@/lib/api/client"
 import { isRemoteApi } from "@/lib/env"
-import { selectMapProvider, type Coordinate, type Viewport } from "@/lib/map"
+import { selectMapConfiguration, type Coordinate, type MapProvider, type Viewport } from "@/lib/map"
 import { useCopy } from "@/lib/i18n-product"
 import { useProductStore } from "@/stores/product-store"
+
+interface TrackLog {
+  event: string
+  latitude: number
+  longitude: number
+  occurredAt: string
+}
 
 /**
  * Every coordinate in this component is WGS-84 — the datum the platform stores and the API
@@ -26,32 +34,57 @@ export function MapView() {
   const [selected, setSelected] = useState(id)
   const [zoom, setZoom] = useState(7)
   const [recentre, setRecentre] = useState<Coordinate | null>(null)
-  const provider = useMemo(() => selectMapProvider(), [])
+  const mapConfiguration = useMemo(() => selectMapConfiguration(), [])
+  const provider = mapConfiguration.provider
   const uav = store.uavs.find((item) => item.id === selected) ?? store.uavs[0]
   const serverTelemetry = useQuery({
-    queryKey: ["telemetry-history", uav?.id],
+    queryKey: ["telemetry-history", uav?.id, "1m"],
     queryFn: () => {
       const to = new Date()
       const from = new Date(to.getTime() - (24 * 60 * 60 * 1000 - 1_000))
-      return api.telemetryHistory(uav!.id, from.toISOString(), to.toISOString())
+      return api.telemetryHistory(uav!.id, from.toISOString(), to.toISOString(), "1m")
     },
     enabled: isRemoteApi && Boolean(uav),
   })
-  const coordinateHistory = isRemoteApi
-    ? (serverTelemetry.data ?? []).map((point) => ({
-        latitude: point.latitude,
-        longitude: point.longitude,
-        occurredAt: point.observedAt,
-        event: point.status,
-      }))
-    : store.flightLogs.filter((item) => item.uavId === uav?.id)
+  const coordinateHistory = useMemo(
+    () =>
+      isRemoteApi
+        ? (serverTelemetry.data ?? []).map((point) => ({
+            latitude: point.latitude,
+            longitude: point.longitude,
+            occurredAt: point.observedAt,
+            event: point.status,
+          }))
+        : store.flightLogs.filter((item) => item.uavId === uav?.id),
+    [serverTelemetry.data, store.flightLogs, uav?.id]
+  )
+  const coordinateLogs = useMemo<TrackLog[]>(
+    () =>
+      coordinateHistory
+        .flatMap((item) =>
+          item.latitude === undefined || item.longitude === undefined
+            ? []
+            : [
+                {
+                  event: item.event,
+                  latitude: item.latitude,
+                  longitude: item.longitude,
+                  occurredAt: item.occurredAt,
+                },
+              ]
+        )
+        .toSorted((left, right) => left.occurredAt.localeCompare(right.occurredAt)),
+    [coordinateHistory]
+  )
+  const amapTrack = useMemo(
+    () =>
+      coordinateLogs.map((item) => ({
+        latitude: item.latitude,
+        longitude: item.longitude,
+      })),
+    [coordinateLogs]
+  )
   if (!uav) return <QueryLoading locale={store.locale} />
-  const coordinateLogs = coordinateHistory
-    .filter(
-      (item): item is typeof item & { latitude: number; longitude: number } =>
-        item.latitude !== undefined && item.longitude !== undefined
-    )
-    .toSorted((left, right) => left.occurredAt.localeCompare(right.occurredAt))
   const coordinates: Coordinate[] = [
     ...coordinateLogs.map((item) => ({ latitude: item.latitude, longitude: item.longitude })),
     { latitude: uav.latitude, longitude: uav.longitude },
@@ -69,21 +102,12 @@ export function MapView() {
     latitudeSpan: Math.max(maxLatitude - minLatitude, 0.02) * zoomFactor,
     longitudeSpan: Math.max(maxLongitude - minLongitude, 0.02) * zoomFactor,
   }
-  const project = (point: Coordinate) => provider.project(point, viewport)
-  const trackPoints = coordinateLogs.map((item) =>
-    project({ latitude: item.latitude, longitude: item.longitude })
-  )
-  const currentPoint = project({ latitude: uav.latitude, longitude: uav.longitude })
-  const visibleTrack = [...trackPoints, currentPoint]
+  const usesAmap = mapConfiguration.kind === "amap"
   return (
     <>
       <PageHeader
         title={copy.map}
-        description={
-          store.locale === "zh-CN"
-            ? "内置可交互测试提供方；替换 provider 即可接入生产地图。"
-            : "Interactive test provider. Replace the provider to connect a production map."
-        }
+        description={usesAmap ? copy.mapAmapDescription : copy.mapDevelopmentDescription}
       />
       <div className="map-workbench">
         <aside>
@@ -138,54 +162,38 @@ export function MapView() {
             </div>
           </dl>
         </aside>
-        <div className="test-map" role="img" aria-label={`${copy.map}: ${uav.code}`}>
-          <div className="map-grid" aria-hidden="true">
-            {Array.from({ length: 11 }, (_, index) => {
-              const position = `${(index + 1) * (100 / 12)}%`
-              return (
-                <span key={position}>
-                  <i
-                    className="map-grid-x"
-                    style={{ "--grid-position": position } as React.CSSProperties}
-                  />
-                  <i
-                    className="map-grid-y"
-                    style={{ "--grid-position": position } as React.CSSProperties}
-                  />
-                </span>
-              )
-            })}
-          </div>
-          {trackPoints.length ? (
-            <svg viewBox="0 0 100 60" role="img" aria-label={`${uav.code} ${copy.track}`}>
-              <polyline points={visibleTrack.map((point) => `${point.x},${point.y}`).join(" ")} />
-              {trackPoints.map((point, index) => (
-                <circle key={`${point.x}-${point.y}-${index}`} cx={point.x} cy={point.y} r="1.8">
-                  <title>{coordinateLogs[index]?.event}</title>
-                </circle>
-              ))}
-              <circle cx={currentPoint.x} cy={currentPoint.y} r="2.8">
-                <title>{store.locale === "zh-CN" ? "当前位置" : "Current position"}</title>
-              </circle>
-            </svg>
+        <div
+          className={`map-surface ${usesAmap ? "amap-map" : "test-map"}`}
+          role="img"
+          aria-label={`${copy.map}: ${uav.code}`}
+        >
+          {mapConfiguration.kind === "amap" ? (
+            <AmapSurface
+              apiKey={mapConfiguration.apiKey}
+              center={viewport.center}
+              current={{
+                latitude: uav.latitude,
+                longitude: uav.longitude,
+              }}
+              errorText={copy.mapLoadError}
+              label={uav.code}
+              loadingText={copy.mapLoading}
+              serviceHost={mapConfiguration.serviceHost}
+              track={amapTrack}
+              zoom={zoom}
+            />
           ) : (
-            <span className="map-empty-track">
-              {store.locale === "zh-CN"
-                ? "暂无轨迹数据，仅显示当前位置"
-                : "No track data; showing current position"}
-            </span>
+            <DevelopmentMapSurface
+              coordinateLogs={coordinateLogs}
+              current={{ latitude: uav.latitude, longitude: uav.longitude }}
+              locale={store.locale}
+              provider={provider}
+              trackLabel={copy.track}
+              uavCode={uav.code}
+              viewport={viewport}
+              zoom={zoom}
+            />
           )}
-          <div
-            className="map-marker"
-            style={{
-              left: `${currentPoint.x}%`,
-              top: `${(currentPoint.y / 60) * 100}%`,
-              transform: `scale(${0.85 + zoom * 0.03})`,
-            }}
-          >
-            <Plane />
-            <span>{uav.code}</span>
-          </div>
           <div className="map-controls">
             <ActionTooltip label={copy.zoomIn}>
               <Button
@@ -222,6 +230,85 @@ export function MapView() {
             {provider.name} · Z{zoom}
           </span>
         </div>
+      </div>
+    </>
+  )
+}
+
+interface DevelopmentMapSurfaceProps {
+  coordinateLogs: TrackLog[]
+  current: Coordinate
+  locale: "zh-CN" | "en"
+  provider: MapProvider
+  trackLabel: string
+  uavCode: string
+  viewport: Viewport
+  zoom: number
+}
+
+function DevelopmentMapSurface({
+  coordinateLogs,
+  current,
+  locale,
+  provider,
+  trackLabel,
+  uavCode,
+  viewport,
+  zoom,
+}: DevelopmentMapSurfaceProps) {
+  const project = (point: Coordinate) => provider.project(point, viewport)
+  const trackPoints = coordinateLogs.map((item) => project(item))
+  const currentPoint = project(current)
+  const visibleTrack = [...trackPoints, currentPoint]
+
+  return (
+    <>
+      <div className="map-grid" aria-hidden="true">
+        {Array.from({ length: 11 }, (_, index) => {
+          const position = `${(index + 1) * (100 / 12)}%`
+          return (
+            <span key={position}>
+              <i
+                className="map-grid-x"
+                style={{ "--grid-position": position } as React.CSSProperties}
+              />
+              <i
+                className="map-grid-y"
+                style={{ "--grid-position": position } as React.CSSProperties}
+              />
+            </span>
+          )
+        })}
+      </div>
+      {trackPoints.length ? (
+        <svg viewBox="0 0 100 60" role="img" aria-label={`${uavCode} ${trackLabel}`}>
+          <polyline points={visibleTrack.map((point) => `${point.x},${point.y}`).join(" ")} />
+          {trackPoints.map((point, index) => (
+            <circle key={`${point.x}-${point.y}-${index}`} cx={point.x} cy={point.y} r="1.8">
+              <title>{coordinateLogs[index]?.event}</title>
+            </circle>
+          ))}
+          <circle cx={currentPoint.x} cy={currentPoint.y} r="2.8">
+            <title>{locale === "zh-CN" ? "当前位置" : "Current position"}</title>
+          </circle>
+        </svg>
+      ) : (
+        <span className="map-empty-track">
+          {locale === "zh-CN"
+            ? "暂无轨迹数据，仅显示当前位置"
+            : "No track data; showing current position"}
+        </span>
+      )}
+      <div
+        className="map-marker"
+        style={{
+          left: `${currentPoint.x}%`,
+          top: `${(currentPoint.y / 60) * 100}%`,
+          transform: `scale(${0.85 + zoom * 0.03})`,
+        }}
+      >
+        <Plane />
+        <span>{uavCode}</span>
       </div>
     </>
   )

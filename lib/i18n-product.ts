@@ -52,6 +52,10 @@ export const messages = {
     confirm: "确认",
     commandSent: "指令已进入队列",
     map: "地图定位",
+    mapAmapDescription: "高德地图实景图层；平台坐标保持 WGS-84，渲染边界转换为 GCJ-02。",
+    mapDevelopmentDescription: "开发网格（非真实地图）；配置 AMap Key 后启用实景图层。",
+    mapLoading: "正在加载高德地图…",
+    mapLoadError: "高德地图加载失败，请检查网络、Key 与 CSP 配置。",
     zoomIn: "放大",
     zoomOut: "缩小",
     center: "定位设备",
@@ -151,6 +155,12 @@ export const messages = {
     confirm: "Confirm",
     commandSent: "Command queued",
     map: "Map",
+    mapAmapDescription:
+      "AMap production layer; platform coordinates stay WGS-84 and convert at render time.",
+    mapDevelopmentDescription:
+      "Development grid (not a real map). Configure an AMap key for production tiles.",
+    mapLoading: "Loading AMap…",
+    mapLoadError: "AMap failed to load. Check the network, key, and CSP configuration.",
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
     center: "Center device",

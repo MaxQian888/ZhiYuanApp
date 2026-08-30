@@ -77,5 +77,5 @@ description: React Query 承担全部服务端状态；视图按领域拆分；�
 
 - 新增视图时必须放进 `components/product/views/`，并在 `product-page.tsx` 的映射里登记。
 - 任何需要坐标的新代码都必须经过 `MapProvider`；直接 import `lib/map/coordinates.ts` 视为破坏边界。
-- 高德地图目前只实现了坐标契约与投影，**瓦片渲染需要 JS SDK 与地图 key**，接入时需按 `README-csp.md` 追加 CSP 来源。
+- 高德地图图层在配置 `NEXT_PUBLIC_AMAP_KEY` 后按需加载 JS API 2.0；生产环境还应配置只暴露代理地址的 `NEXT_PUBLIC_AMAP_SERVICE_HOST`，并按 `README-csp.md` 追加 CSP 来源。无 key 时界面明确显示为开发网格。
 - 火山引擎 ASR 需要一个服务端网关来签名上游连接，该网关尚未实现。

@@ -33,13 +33,25 @@ pnpm tauri build --config path/to/production.conf.json
 
 Origins the optional integrations need, if they are enabled:
 
-| Feature        | Directive     | Origins                                              |
-| -------------- | ------------- | ---------------------------------------------------- |
-| Platform API   | `connect-src` | `https://api.<your-domain>`                          |
-| AMap JS API    | `script-src`  | `https://webapi.amap.com`                            |
-| AMap JS API    | `connect-src` | `https://restapi.amap.com` `https://webapi.amap.com` |
-| AMap tiles     | `img-src`     | `https://*.amap.com` `https://*.autonavi.com`        |
-| Volcengine ASR | `connect-src` | `wss://<your-asr-gateway>`                           |
+| Feature        | Directive     | Origins                                                                                      |
+| -------------- | ------------- | -------------------------------------------------------------------------------------------- |
+| Platform API   | `connect-src` | `https://api.<your-domain>`                                                                  |
+| AMap JS API    | `script-src`  | `https://webapi.amap.com`                                                                    |
+| AMap JS API    | `connect-src` | `https://restapi.amap.com` `https://webapi.amap.com` or the configured security proxy origin |
+| AMap tiles     | `img-src`     | `https://*.amap.com` `https://*.autonavi.com`                                                |
+| Volcengine ASR | `connect-src` | `wss://<your-asr-gateway>`                                                                   |
+
+For an AMap-enabled desktop artifact, set `NEXT_PUBLIC_AMAP_KEY` and the HTTPS
+`NEXT_PUBLIC_AMAP_SERVICE_HOST`, then run:
+
+```bash
+pnpm tauri:build:amap
+```
+
+That command derives the exact service-proxy origin (and `NEXT_PUBLIC_API_URL`, when set),
+merges only the required AMap sources into a build-time CSP overlay, and leaves
+`tauri.conf.json` unchanged. The normal `pnpm tauri build` remains the strict no-map rollback
+path. Insecure or credential-bearing deployment URLs are rejected before the build starts.
 
 The ASR entry is our own gateway, not Volcengine: the browser never connects to Volcengine
 directly, because the credentials that sign that connection are server-side. See

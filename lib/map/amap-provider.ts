@@ -7,6 +7,14 @@ import {
   type Viewport,
 } from "@/lib/map/provider"
 
+export type AmapPosition = [longitude: number, latitude: number]
+
+/** Converts a platform WGS-84 point at the exact edge where AMap consumes it. */
+export function toAmapPosition(point: Coordinate): AmapPosition {
+  const shifted = wgs84ToGcj02(point)
+  return [shifted.longitude, shifted.latitude]
+}
+
 /**
  * The AMap (高德) provider.
  *

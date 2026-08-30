@@ -1,6 +1,6 @@
 import { wgs84ToGcj02, type Coordinate } from "@/lib/map/coordinates"
-import { amapProvider } from "@/lib/map/amap-provider"
-import { selectMapProvider } from "@/lib/map"
+import { amapProvider, toAmapPosition } from "@/lib/map/amap-provider"
+import { selectMapConfiguration } from "@/lib/map"
 import { testMapProvider } from "@/lib/map/test-provider"
 import type { MapProvider, Viewport } from "@/lib/map/provider"
 
@@ -36,6 +36,12 @@ describe.each([
 })
 
 describe("datum handling", () => {
+  it("converts WGS-84 only at the AMap SDK position edge", () => {
+    const point: Coordinate = { latitude: 32.08, longitude: 118.8 }
+    const shifted = wgs84ToGcj02(point)
+    expect(toAmapPosition(point)).toEqual([shifted.longitude, shifted.latitude])
+  })
+
   it("the test provider plots the platform's own coordinates untouched", () => {
     // Both providers place the centre at (50, 30), so the centre proves nothing. An offset
     // point does: under the test provider the offset is the raw WGS-84 difference.
@@ -70,7 +76,7 @@ describe("datum handling", () => {
   })
 })
 
-describe("selectMapProvider", () => {
+describe("selectMapConfiguration", () => {
   const originalEnv = process.env
 
   afterEach(() => {
@@ -79,11 +85,33 @@ describe("selectMapProvider", () => {
 
   it("falls back to the test provider when no key is configured", () => {
     process.env = { ...originalEnv, NEXT_PUBLIC_AMAP_KEY: "" }
-    expect(selectMapProvider()).toBe(testMapProvider)
+    expect(selectMapConfiguration()).toEqual({
+      kind: "development",
+      provider: testMapProvider,
+    })
   })
 
   it("uses AMap once a key is configured", () => {
     process.env = { ...originalEnv, NEXT_PUBLIC_AMAP_KEY: "test-key" }
-    expect(selectMapProvider()).toBe(amapProvider)
+    expect(selectMapConfiguration()).toEqual({
+      kind: "amap",
+      apiKey: "test-key",
+      provider: amapProvider,
+      serviceHost: undefined,
+    })
+  })
+
+  it("keeps the AMap key and service proxy in the selected configuration", () => {
+    process.env = {
+      ...originalEnv,
+      NEXT_PUBLIC_AMAP_KEY: "test-key",
+      NEXT_PUBLIC_AMAP_SERVICE_HOST: "https://maps.test/_AMapService",
+    }
+    expect(selectMapConfiguration()).toEqual({
+      kind: "amap",
+      apiKey: "test-key",
+      provider: amapProvider,
+      serviceHost: "https://maps.test/_AMapService",
+    })
   })
 })

@@ -35,6 +35,16 @@ export function getMapKey(): string | undefined {
 }
 
 /**
+ * Optional same-origin proxy for AMap's security-protected service requests.
+ *
+ * The proxy owns the security secret. This public value is only its URL; it is safe to ship
+ * in the static client and avoids exposing `securityJsCode` in the browser bundle.
+ */
+export function getAmapServiceHost(): string | undefined {
+  return process.env.NEXT_PUBLIC_AMAP_SERVICE_HOST || undefined
+}
+
+/**
  * Which speech recogniser to use.
  *
  * Defaults to `browser` — the Web Speech API, which needs no account and is what the console
