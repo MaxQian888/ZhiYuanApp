@@ -13,6 +13,10 @@ public record VolcengineCredentials(String apiKey, String appKey, String accessK
         return !apiKey.isBlank() || (!appKey.isBlank() && !accessKey.isBlank());
     }
 
+    public String uid() {
+        return !apiKey.isBlank() ? apiKey : appKey;
+    }
+
     public void apply(HttpRequest.Builder request) {
         if (!apiKey.isBlank()) request.header("X-Api-Key", apiKey);
         else request.header("X-Api-App-Key", appKey).header("X-Api-Access-Key", accessKey);

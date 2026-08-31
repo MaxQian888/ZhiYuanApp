@@ -32,13 +32,12 @@ public class AsrConfiguration {
                                   @Value("${zhiyuan.asr.api-key:}") String apiKey,
                                   @Value("${zhiyuan.asr.app-key:}") String appKey,
                                   @Value("${zhiyuan.asr.access-key:}") String accessKey,
-                                  @Value("${zhiyuan.asr.resource-id}") String resourceId,
                                   @Value("${zhiyuan.asr.timeout-seconds:20}") long timeoutSeconds,
                                   @Qualifier("asrWorker") ExecutorService asrWorker) {
         Duration timeout = Duration.ofSeconds(timeoutSeconds);
         return new VolcengineAsrTranscriber(
             HttpClient.newBuilder().connectTimeout(timeout).build(), json, URI.create(endpoint),
-            new VolcengineCredentials(apiKey, appKey, accessKey), resourceId, timeout, asrWorker);
+            new VolcengineCredentials(apiKey, appKey, accessKey), timeout, asrWorker);
     }
 
     @Bean(destroyMethod = "shutdownNow")

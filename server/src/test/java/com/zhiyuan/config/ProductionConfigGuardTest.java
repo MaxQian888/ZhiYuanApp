@@ -204,7 +204,8 @@ class ProductionConfigGuardTest {
         Map<String, String> settings = production();
         settings.put("zhiyuan.asr.enabled", "true");
         settings.put("zhiyuan.asr.public-websocket-url", "wss://api.example/api/v1/asr/ws");
-        settings.put("zhiyuan.asr.endpoint", "https://openspeech.bytedance.com/recognize");
+        settings.put("zhiyuan.asr.endpoint",
+            "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash");
         settings.put("zhiyuan.asr.api-key", "server-side-key");
 
         assertThat(check(settings)).isEmpty();

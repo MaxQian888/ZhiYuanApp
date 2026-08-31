@@ -21,12 +21,10 @@ public class AsrHandshakeInterceptor implements HandshakeInterceptor {
                                    WebSocketHandler handler, Map<String, Object> attributes) {
         String token = UriComponentsBuilder.fromUri(request.getURI()).build()
             .getQueryParams().getFirst("session");
-        var claimed = sessions.consume(token);
-        if (claimed.isEmpty()) {
+        if (!sessions.consume(token)) {
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }
-        attributes.put("staffId", claimed.get().staffId());
         return true;
     }
 

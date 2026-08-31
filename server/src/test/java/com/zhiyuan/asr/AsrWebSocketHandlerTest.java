@@ -33,10 +33,8 @@ class AsrWebSocketHandlerTest {
     @Test
     void streamsPcmIntoOneBoundedSessionAndReturnsTheFinalTranscript() throws Exception {
         CompletableFuture<String> result = new CompletableFuture<>();
-        AsrTranscriber transcriber = (audio, locale, staffId) -> {
+        AsrTranscriber transcriber = audio -> {
             assertThat(audio).containsExactly(1, 2, 3, 4);
-            assertThat(locale).isEqualTo("zh-CN");
-            assertThat(staffId).isEqualTo(7);
             return AsrTranscription.of(result);
         };
         AsrWebSocketHandler handler = new AsrWebSocketHandler(
@@ -64,7 +62,7 @@ class AsrWebSocketHandlerTest {
     void disconnectCancelsTranscriptionAndErasesItsOwnedPcmSnapshot() throws Exception {
         AtomicReference<byte[]> ownedAudio = new AtomicReference<>();
         AtomicBoolean cancelled = new AtomicBoolean();
-        AsrTranscriber transcriber = (audio, locale, staffId) -> {
+        AsrTranscriber transcriber = audio -> {
             ownedAudio.set(audio);
             return new AsrTranscription() {
                 @Override public CompletableFuture<String> result() {

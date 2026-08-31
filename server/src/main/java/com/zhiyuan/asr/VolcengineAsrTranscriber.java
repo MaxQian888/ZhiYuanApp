@@ -20,37 +20,40 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class VolcengineAsrTranscriber implements AsrTranscriber {
+    public static final String FLASH_RESOURCE_ID = "volc.bigasr.auc_turbo";
+    public static final String FLASH_ENDPOINT =
+        "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
     private final HttpClient http;
     private final ObjectMapper json;
     private final URI endpoint;
     private final VolcengineCredentials credentials;
-    private final String resourceId;
     private final Duration timeout;
     private final ExecutorService worker;
 
     public VolcengineAsrTranscriber(HttpClient http, ObjectMapper json, URI endpoint,
-                                    VolcengineCredentials credentials, String resourceId,
-                                    Duration timeout, ExecutorService worker) {
+                                    VolcengineCredentials credentials, Duration timeout,
+                                    ExecutorService worker) {
         this.http = http;
         this.json = json;
         this.endpoint = endpoint;
         this.credentials = credentials;
-        this.resourceId = resourceId;
         this.timeout = timeout;
         this.worker = worker;
     }
 
     @Override
-    public AsrTranscription transcribe(byte[] pcm16le, String locale, long staffId) {
+    public AsrTranscription transcribe(byte[] pcm16le) {
         if (!credentials.configured()) {
             return AsrTranscription.of(CompletableFuture.failedFuture(
                 new IllegalStateException("Volcengine ASR credentials are not configured")));
         }
-        return new RequestTranscription(pcm16le, locale, staffId);
+        return new RequestTranscription(pcm16le);
     }
 
     private String transcript(HttpResponse<String> response) {
-        String providerStatus = response.headers().firstValue("X-Api-Status-Code").orElse("20000000");
+        String providerStatus = response.headers().firstValue("X-Api-Status-Code")
+            .orElseThrow(() -> new IllegalStateException(
+                "Volcengine ASR response omitted X-Api-Status-Code"));
         if (response.statusCode() >= 300 || !"20000000".equals(providerStatus)) {
             throw new IllegalStateException("Volcengine ASR rejected the request");
         }
@@ -81,14 +84,11 @@ public class VolcengineAsrTranscriber implements AsrTranscriber {
         private final AtomicReference<byte[]> requestBody = new AtomicReference<>();
         private final AtomicReference<CompletableFuture<HttpResponse<String>>> request =
             new AtomicReference<>();
+        private final Object requestLifecycle = new Object();
         private final Future<?> preparation;
-        private final String locale;
-        private final long staffId;
 
-        private RequestTranscription(byte[] pcm, String locale, long staffId) {
+        private RequestTranscription(byte[] pcm) {
             this.pcm = new AtomicReference<>(pcm);
-            this.locale = locale;
-            this.staffId = staffId;
             this.preparation = worker.submit(this::prepareAndSend);
         }
 
@@ -100,7 +100,7 @@ public class VolcengineAsrTranscriber implements AsrTranscriber {
             }
             byte[] body;
             try {
-                body = requestBody(audio, locale, staffId);
+                body = requestBody(audio, credentials.uid());
             } finally {
                 wipe(audio);
             }
@@ -112,14 +112,27 @@ public class VolcengineAsrTranscriber implements AsrTranscriber {
             HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint)
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
-                .header("X-Api-Resource-Id", resourceId)
+                .header("X-Api-Resource-Id", FLASH_RESOURCE_ID)
                 .header("X-Api-Request-Id", UUID.randomUUID().toString())
                 .header("X-Api-Sequence", "-1")
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body));
             credentials.apply(builder);
-            CompletableFuture<HttpResponse<String>> pending = http.sendAsync(builder.build(),
-                HttpResponse.BodyHandlers.ofString());
-            request.set(pending);
+            CompletableFuture<HttpResponse<String>> pending;
+            try {
+                synchronized (requestLifecycle) {
+                    if (result.isCancelled()) {
+                        wipe(requestBody.getAndSet(null));
+                        return;
+                    }
+                    pending = http.sendAsync(builder.build(),
+                        HttpResponse.BodyHandlers.ofString());
+                    request.set(pending);
+                }
+            } catch (RuntimeException failure) {
+                wipe(requestBody.getAndSet(null));
+                result.completeExceptionally(failure);
+                return;
+            }
             pending.whenComplete((response, failure) -> {
                 try {
                     if (failure == null) result.complete(transcript(response));
@@ -127,6 +140,7 @@ public class VolcengineAsrTranscriber implements AsrTranscriber {
                 } catch (RuntimeException invalid) {
                     result.completeExceptionally(invalid);
                 } finally {
+                    request.compareAndSet(pending, null);
                     wipe(requestBody.getAndSet(null));
                 }
             });
@@ -141,21 +155,24 @@ public class VolcengineAsrTranscriber implements AsrTranscriber {
         public void cancel() {
             result.cancel(false);
             preparation.cancel(true);
-            CompletableFuture<HttpResponse<String>> pending = request.getAndSet(null);
+            CompletableFuture<HttpResponse<String>> pending;
+            synchronized (requestLifecycle) {
+                pending = request.getAndSet(null);
+                if (pending == null) wipe(requestBody.getAndSet(null));
+            }
             if (pending != null) pending.cancel(true);
             wipe(pcm.getAndSet(null));
-            wipe(requestBody.getAndSet(null));
         }
     }
 
-    private static byte[] requestBody(byte[] pcm, String locale, long staffId) {
+    private static byte[] requestBody(byte[] pcm, String uid) {
         byte[] wave = wav(pcm);
         byte[] encoded = Base64.getEncoder().encode(wave);
         wipe(wave);
-        byte[] prefix = ("{\"user\":{\"uid\":\"" + staffId
+        byte[] prefix = ("{\"user\":{\"uid\":\"" + uid
             + "\"},\"audio\":{\"data\":\"").getBytes(StandardCharsets.UTF_8);
-        byte[] suffix = ("\"},\"request\":{\"model_name\":\"bigmodel\",\"language\":\""
-            + locale + "\"}}").getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "\"},\"request\":{\"model_name\":\"bigmodel\"}}"
+            .getBytes(StandardCharsets.UTF_8);
         byte[] body = new byte[prefix.length + encoded.length + suffix.length];
         System.arraycopy(prefix, 0, body, 0, prefix.length);
         System.arraycopy(encoded, 0, body, prefix.length, encoded.length);

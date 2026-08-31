@@ -15,6 +15,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
+import java.net.http.WebSocketHandshakeException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.Arrays;
@@ -67,7 +68,9 @@ class AsrGatewayIntegrationTest {
         assertThat(receivedAudio.get()).containsExactly(1, 2, 3, 4);
         assertThatThrownBy(() -> http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(3))
             .buildAsync(websocketUri, new WebSocket.Listener() {}).join())
-            .hasCauseInstanceOf(java.net.http.WebSocketHandshakeException.class);
+            .cause()
+            .isInstanceOfSatisfying(WebSocketHandshakeException.class,
+                failure -> assertThat(failure.getResponse().statusCode()).isEqualTo(401));
     }
 
     private URI uri(String path) {
@@ -103,7 +106,7 @@ class AsrGatewayIntegrationTest {
         @Bean
         @Primary
         AsrTranscriber fakeAsrTranscriber(AtomicReference<byte[]> receivedAudio) {
-            return (audio, locale, staffId) -> {
+            return audio -> {
                 receivedAudio.set(Arrays.copyOf(audio, audio.length));
                 return AsrTranscription.of(
                     CompletableFuture.completedFuture("无人机一号返航"));

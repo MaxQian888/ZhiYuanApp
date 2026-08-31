@@ -2,6 +2,7 @@ package com.zhiyuan.config;
 
 import com.zhiyuan.device.MqttTopics;
 import com.zhiyuan.asr.VolcengineCredentials;
+import com.zhiyuan.asr.VolcengineAsrTranscriber;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationPreparedEvent;
@@ -94,8 +95,9 @@ public class ProductionConfigGuard
                 problems.add("ASR_PUBLIC_WEBSOCKET_URL must use wss:// when ASR is enabled.");
             }
             String endpoint = property.apply("zhiyuan.asr.endpoint");
-            if (endpoint == null || !endpoint.startsWith("https://")) {
-                problems.add("VOLCENGINE_ASR_ENDPOINT must use https:// when ASR is enabled.");
+            if (!VolcengineAsrTranscriber.FLASH_ENDPOINT.equals(endpoint)) {
+                problems.add("VOLCENGINE_ASR_ENDPOINT must be the official Flash endpoint when"
+                    + " ASR is enabled.");
             }
             var credentials = new VolcengineCredentials(property.apply("zhiyuan.asr.api-key"),
                 property.apply("zhiyuan.asr.app-key"), property.apply("zhiyuan.asr.access-key"));

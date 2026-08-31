@@ -26,7 +26,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AsrControllerTest {
     @Autowired MockMvc mvc;
     @Autowired AsrSessionService sessions;
-
     @Test
     void requiresAnAuthenticatedStaffSession() throws Exception {
         mvc.perform(post("/api/v1/asr/sessions"))
@@ -63,9 +62,8 @@ class AsrControllerTest {
         String token = URLDecoder.decode(URI.create(url).getRawQuery().substring("session=".length()),
             StandardCharsets.UTF_8);
 
-        assertThat(sessions.consume(token)).get()
-            .extracting(AsrSessionService.ClaimedSession::staffId).isEqualTo(1L);
-        assertThat(sessions.consume(token)).isEmpty();
+        assertThat(sessions.consume(token)).isTrue();
+        assertThat(sessions.consume(token)).isFalse();
         assertThat(sessions.purgeExpired()).isZero();
     }
 }

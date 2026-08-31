@@ -94,7 +94,6 @@ zhiyuan:
     api-key: ${VOLCENGINE_ASR_API_KEY:}
     app-key: ${VOLCENGINE_ASR_APP_KEY:}
     access-key: ${VOLCENGINE_ASR_ACCESS_KEY:}
-    resource-id: ${VOLCENGINE_ASR_RESOURCE_ID:volc.seedasr.auc_turbo}
     timeout-seconds: ${VOLCENGINE_ASR_TIMEOUT_SECONDS:20}
   clickhouse:
     # Setting a URL swaps the in-memory archive for the real one. Unset in development.

@@ -14,7 +14,6 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Base64;
-import java.util.Optional;
 import java.util.UUID;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -65,19 +64,15 @@ public class AsrSessionService {
     }
 
     @Transactional
-    public Optional<ClaimedSession> consume(String token) {
-        if (token == null || token.isBlank()) return Optional.empty();
+    public boolean consume(String token) {
+        if (token == null || token.isBlank()) return false;
         Instant now = clock.instant();
         String tokenHash = TokenDigest.sha256(token);
         int claimed = jdbc.update("""
             UPDATE asr_sessions SET consumed_at = ?
             WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ?
             """, Timestamp.from(now), tokenHash, Timestamp.from(now));
-        if (claimed != 1) return Optional.empty();
-        ClaimedSession session = jdbc.queryForObject("""
-            SELECT staff_id FROM asr_sessions WHERE token_hash = ?
-            """, (result, row) -> new ClaimedSession(result.getLong("staff_id")), tokenHash);
-        return Optional.ofNullable(session);
+        return claimed == 1;
     }
 
     public int purgeExpired() {
@@ -86,5 +81,4 @@ public class AsrSessionService {
     }
 
     public record CreatedSession(String sessionId, String websocketUrl, OffsetDateTime expiresAt) {}
-    public record ClaimedSession(long staffId) {}
 }

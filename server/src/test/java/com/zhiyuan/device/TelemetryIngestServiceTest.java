@@ -8,6 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
 
@@ -159,17 +160,31 @@ class TelemetryIngestServiceTest {
     void drainingTheOutboxCoalescesManySamplesIntoOnePublishedBatch() {
         jdbc.update("DELETE FROM outbox WHERE published_at IS NULL");
         long sequence = nextSequence("UAV-02");
+        var eventIds = new HashSet<String>();
         for (int index = 0; index < 20; index++) {
-            ingest.onTelemetry(sample("UAV-02", sequence + index, 40 + (index % 5)));
+            var telemetry = sample("UAV-02", sequence + index, 40 + (index % 5));
+            eventIds.add(telemetry.eventId());
+            ingest.onTelemetry(telemetry);
         }
 
         int published = publisher.drain();
 
         assertThat(published).isGreaterThanOrEqualTo(20);
-        // Everything drained is marked, so a second pass has nothing left to do for these.
-        assertThat(repository.pendingOutbox(100))
-            .noneMatch(row -> row.aggregateId().equals("UAV-02"));
+        // The simulator may publish another UAV-02 sample immediately after this drain. Match the
+        // immutable IDs created by this test so unrelated background telemetry cannot create a
+        // false failure while these exact records must still be confirmed.
+        var rows = jdbc.query("""
+            SELECT payload, published_at FROM outbox WHERE aggregate_id = 'UAV-02'
+            """, (result, row) -> new OutboxPublication(result.getString("payload"),
+            result.getTimestamp("published_at") != null));
+        assertThat(eventIds).allSatisfy(eventId -> assertThat(rows)
+            .filteredOn(row -> row.payload().contains(eventId))
+            .singleElement()
+            .extracting(OutboxPublication::published)
+            .isEqualTo(true));
     }
+
+    private record OutboxPublication(String payload, boolean published) {}
 
     @Test
     void resolvesADeviceCodeToItsIdAndCachesIt() {

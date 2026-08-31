@@ -40,8 +40,7 @@ public class AsrWebSocketHandler extends AbstractWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        long staffId = (long) session.getAttributes().get("staffId");
-        SessionState state = new SessionState(staffId, PCM_BYTES_PER_SECOND * maxSeconds);
+        SessionState state = new SessionState(PCM_BYTES_PER_SECOND * maxSeconds);
         states.put(session.getId(), state);
         state.setTimeout(scheduler.schedule(() -> expire(session, state), maxSeconds,
             TimeUnit.SECONDS));
@@ -63,7 +62,7 @@ public class AsrWebSocketHandler extends AbstractWebSocketHandler {
             String locale = frame.path("locale").asText();
             String mimeType = frame.path("mimeType").asText();
             if (!("zh-CN".equals(locale) || "en".equals(locale))
-                || !"audio/pcm;rate=16000".equals(mimeType) || !state.start(locale)) {
+                || !"audio/pcm;rate=16000".equals(mimeType) || !state.start()) {
                 fail(session, "failed", CloseStatus.BAD_DATA);
                 return;
             }
@@ -98,7 +97,7 @@ public class AsrWebSocketHandler extends AbstractWebSocketHandler {
         }
         AsrTranscription transcription;
         try {
-            transcription = transcriber.transcribe(audio, snapshot.locale(), snapshot.staffId());
+            transcription = transcriber.transcribe(audio);
         } catch (RuntimeException rejected) {
             Arrays.fill(audio, (byte) 0);
             fail(session, "network", CloseStatus.NORMAL);
@@ -163,34 +162,32 @@ public class AsrWebSocketHandler extends AbstractWebSocketHandler {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private record GatewayMessage(String type, String text, String reason) {}
-    private record AudioSnapshot(byte[] audio, String locale, long staffId) {}
+    private record AudioSnapshot(byte[] audio) {}
 
     private static final class SessionState {
-        private final long staffId;
         private final int maxBytes;
         private byte[] audio;
         private int length;
-        private String locale;
+        private boolean started;
         private boolean finished;
         private boolean cleared;
         private ScheduledFuture<?> timeout;
         private AsrTranscription transcription;
         private byte[] inFlightAudio;
 
-        private SessionState(long staffId, int maxBytes) {
-            this.staffId = staffId;
+        private SessionState(int maxBytes) {
             this.maxBytes = maxBytes;
         }
 
-        private synchronized boolean start(String locale) {
-            if (this.locale != null || finished) return false;
-            this.locale = locale;
+        private synchronized boolean start() {
+            if (started || finished) return false;
+            started = true;
             audio = new byte[maxBytes];
             return true;
         }
 
         private synchronized boolean append(ByteBuffer source) {
-            if (locale == null || finished || source.remaining() > audio.length - length) return false;
+            if (!started || finished || source.remaining() > audio.length - length) return false;
             int bytes = source.remaining();
             source.get(audio, length, bytes);
             length += bytes;
@@ -198,18 +195,18 @@ public class AsrWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         private synchronized AudioSnapshot finish() {
-            if (locale == null || finished) return null;
+            if (!started || finished) return null;
             finished = true;
             if (timeout != null) timeout.cancel(false);
             byte[] snapshot = Arrays.copyOf(audio, length);
             Arrays.fill(audio, 0, length, (byte) 0);
             audio = null;
             length = 0;
-            return new AudioSnapshot(snapshot, locale, staffId);
+            return new AudioSnapshot(snapshot);
         }
 
         private synchronized boolean hasStarted() {
-            return locale != null && !finished;
+            return started && !finished;
         }
 
         private synchronized void setTimeout(ScheduledFuture<?> timeout) {
