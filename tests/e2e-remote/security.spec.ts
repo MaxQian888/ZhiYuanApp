@@ -1,13 +1,44 @@
 import { expect, test } from "@playwright/test"
 import { connectAsync } from "mqtt"
+import { parseSseChunk } from "@/lib/api/client"
+
+type TelemetryFixture = {
+  eventId: string
+  sequence: number
+  observedAt: string
+  battery: number
+  latitude: number
+  longitude: number
+  altitude: number
+  speed: number
+}
+
+function createTelemetryPayload(sample: TelemetryFixture) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    uavCode: "UAV-01",
+    status: "FLYING",
+    ...sample,
+  })
+}
+
+function connectTestMqtt(clientId: string) {
+  return connectAsync("mqtt://127.0.0.1:1883", { clientId, reconnectPeriod: 0 })
+}
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/login")
   await page.getByRole("textbox", { name: /用户名|Username/ }).fill("admin")
   await page.getByLabel(/密码|Password/).fill("admin123")
+  const response = page.waitForResponse(
+    (candidate) =>
+      candidate.url().endsWith("/api/v1/auth/login") && candidate.request().method() === "POST"
+  )
   await page.getByRole("button", { name: /登录|Sign in/ }).click()
+  const payload = await (await response).json()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.locator("main.product-page")).toBeVisible()
+  return payload.data.accessToken as string
 }
 
 async function loginViaApi(page: import("@playwright/test").Page): Promise<string> {
@@ -21,6 +52,65 @@ async function loginViaApi(page: import("@playwright/test").Page): Promise<strin
     if (!response.ok) throw new Error(`API login failed: ${response.status}`)
     return (await response.json()).data.accessToken as string
   })
+}
+
+async function openTelemetryDeltaProbe(token: string, expected: { code: string; battery: number }) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15_000)
+  let response: Response
+  try {
+    response = await fetch("http://localhost:8080/api/v1/uavs/telemetry/stream", {
+      headers: { Accept: "text/event-stream", Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+  } catch (error) {
+    clearTimeout(timer)
+    throw error
+  }
+  const body = response.body
+  if (!response.ok || !body) {
+    clearTimeout(timer)
+    controller.abort()
+    throw new Error(`SSE connection failed: ${response.status}`)
+  }
+
+  const result = (async () => {
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) throw new Error("SSE stream ended before telemetry-delta")
+        buffer += decoder.decode(value, { stream: true })
+        const parsed = parseSseChunk(buffer.replaceAll("\r\n", "\n"))
+        buffer = parsed.remainder
+        for (const event of parsed.events) {
+          if (event.event !== "telemetry-delta" || !Array.isArray(event.data)) continue
+          const updated = event.data.find(
+            (uav) =>
+              typeof uav === "object" &&
+              uav !== null &&
+              "code" in uav &&
+              "battery" in uav &&
+              uav.code === expected.code &&
+              uav.battery === expected.battery
+          )
+          if (updated) return updated
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error("Timed out waiting for telemetry-delta", { cause: error })
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  })()
+  void result.catch(() => {})
+  return { result, close: () => controller.abort() }
 }
 
 test("staff mutations cross Spring, Flyway, and the browser API boundary", async ({ page }) => {
@@ -249,29 +339,181 @@ test("browser CORS preflight and repeated order submissions preserve idempotency
   expect(result.replayOrderId).toBe(result.firstOrderId)
 })
 
+test("MQTT telemetry reaches browser SSE and command retries dispatch once", async ({ page }) => {
+  const eventId = crypto.randomUUID()
+  // The remote workflow starts from a fresh database. This is a device counter fixture,
+  // deliberately independent of wall-clock time (CONTEXT.md §4).
+  const sequence = 10_000
+  const observedAt = new Date().toISOString()
+  const battery = 80
+  const telemetryPosition = {
+    battery,
+    latitude: 32.0609,
+    longitude: 118.7809,
+    altitude: 53.5,
+    speed: 9.7,
+  }
+  const telemetry = createTelemetryPayload({
+    ...telemetryPosition,
+    eventId,
+    sequence: sequence + 1,
+    observedAt,
+  })
+  const mqtt = await connectTestMqtt(`playwright-reliability-${eventId}`)
+  let receivedCommands = 0
+  let closeProbe = () => {}
+
+  try {
+    await mqtt.subscribeAsync("zhiyuan/v1/uavs/UAV-01/commands", { qos: 1 })
+    mqtt.on("message", (topic) => {
+      if (topic === "zhiyuan/v1/uavs/UAV-01/commands") receivedCommands += 1
+    })
+    const accessToken = await login(page)
+    const streamOpened = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/v1/uavs/telemetry/stream") && response.status() === 200
+    )
+    const fleetLoaded = Promise.all(
+      ["10", "100"].map((size) =>
+        page.waitForResponse((response) => {
+          const url = new URL(response.url())
+          return (
+            url.pathname === "/api/v1/uavs" &&
+            url.searchParams.get("size") === size &&
+            response.status() === 200
+          )
+        })
+      )
+    )
+    await page.goto("/uavs")
+    await Promise.all([streamOpened, fleetLoaded])
+    const uavRow = page.locator(".table-row").filter({ hasText: "UAV-01" })
+    await expect(uavRow).toBeVisible()
+    const batteryMeter = uavRow.getByRole("progressbar")
+    expect(await batteryMeter.getAttribute("aria-valuenow")).not.toBe(String(battery))
+    const probe = await openTelemetryDeltaProbe(accessToken, { code: "UAV-01", battery })
+    closeProbe = probe.close
+    await expect
+      .poll(
+        async () => {
+          const response = await fetch("http://localhost:8080/actuator/health", {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+          if (!response.ok) return false
+          const health = await response.json()
+          return health.components?.deviceLink?.details?.connected === true
+        },
+        { timeout: 15_000 }
+      )
+      .toBe(true)
+
+    await mqtt.publishAsync(
+      "zhiyuan/v1/uavs/UAV-01/presence",
+      JSON.stringify({
+        schemaVersion: 1,
+        eventId: crypto.randomUUID(),
+        uavCode: "UAV-01",
+        sequence,
+        observedAt,
+        online: true,
+      }),
+      { qos: 1 }
+    )
+    await mqtt.publishAsync("zhiyuan/v1/uavs/UAV-01/telemetry", telemetry, { qos: 1 })
+
+    const [streamed] = await Promise.all([
+      probe.result,
+      expect(batteryMeter).toHaveAttribute("aria-valuenow", String(battery), { timeout: 15_000 }),
+    ])
+    expect(streamed).toMatchObject({ code: "UAV-01", battery, status: "FLYING" })
+    await expect(uavRow).toContainText("FLYING")
+
+    await mqtt.publishAsync(
+      "zhiyuan/v1/uavs/UAV-01/telemetry",
+      createTelemetryPayload({
+        ...telemetryPosition,
+        eventId: crypto.randomUUID(),
+        sequence: sequence + 2,
+        observedAt: new Date().toISOString(),
+      }),
+      { qos: 1 }
+    )
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (token) => {
+            const response = await fetch("http://localhost:8080/api/v1/uavs/1/readiness", {
+              headers: { Authorization: `Bearer ${token}` },
+            })
+            return response.ok && (await response.json()).data.commandable === true
+          }, accessToken),
+        { timeout: 5_000 }
+      )
+      .toBe(true)
+
+    const result = await page.evaluate(async (token) => {
+      const detail = await fetch("http://localhost:8080/api/v1/uavs/1", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const key = crypto.randomUUID()
+      const submit = (type: string) =>
+        fetch("http://localhost:8080/api/v1/uavs/1/commands", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": key,
+          },
+          body: JSON.stringify({ type, source: "MANUAL" }),
+        })
+      const first = await submit("RETURN_HOME")
+      const firstBody = await first.json()
+      const replay = await submit("RETURN_HOME")
+      const replayBody = await replay.json()
+      const conflict = await submit("LAND")
+      return {
+        uav: (await detail.json()).data,
+        firstStatus: first.status,
+        replayStatus: replay.status,
+        conflictStatus: conflict.status,
+        firstCommandId: firstBody.data.commandId,
+        replayCommandId: replayBody.data.commandId,
+      }
+    }, accessToken)
+
+    expect(result).toMatchObject({
+      uav: { code: "UAV-01", battery, status: "FLYING" },
+      firstStatus: 202,
+      replayStatus: 202,
+      conflictStatus: 409,
+    })
+    expect(result.replayCommandId).toBe(result.firstCommandId)
+    await expect.poll(() => receivedCommands, { timeout: 10_000 }).toBe(1)
+    await page.waitForTimeout(1_000)
+    expect(receivedCommands).toBe(1)
+  } finally {
+    closeProbe()
+    await mqtt.endAsync()
+  }
+})
+
 test("the public telemetry endpoint reads the MQTT sample persisted in ClickHouse", async ({
   page,
 }) => {
   const eventId = crypto.randomUUID()
   const observedAt = new Date()
   const battery = 68
-  const payload = JSON.stringify({
-    schemaVersion: 1,
+  const payload = createTelemetryPayload({
     eventId,
-    uavCode: "UAV-01",
-    sequence: Date.now(),
+    sequence: 20_000,
     observedAt: observedAt.toISOString(),
-    status: "FLYING",
     battery,
     latitude: 32.0602,
     longitude: 118.7802,
     altitude: 52.5,
     speed: 9.3,
   })
-  const mqtt = await connectAsync("mqtt://127.0.0.1:1883", {
-    clientId: `playwright-${eventId}`,
-    reconnectPeriod: 0,
-  })
+  const mqtt = await connectTestMqtt(`playwright-${eventId}`)
   try {
     await page.goto("/login")
 

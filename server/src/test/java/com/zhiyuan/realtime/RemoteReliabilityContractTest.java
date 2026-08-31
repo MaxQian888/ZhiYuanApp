@@ -93,11 +93,12 @@ class RemoteReliabilityContractTest {
             long sequence = jdbc.queryForObject(
                 "SELECT last_sequence FROM uavs WHERE code = ?", Long.class, UAV_CODE) + 1;
             Instant observedAt = Instant.now();
+            String telemetryEventId = UUID.randomUUID().toString();
             publish(device, topics.presence(UAV_CODE), new DeviceMessages.Presence(
                 DeviceMessages.SCHEMA_VERSION, UUID.randomUUID().toString(), UAV_CODE,
                 sequence, observedAt, true));
             publish(device, topics.telemetry(UAV_CODE), new DeviceMessages.Telemetry(
-                DeviceMessages.SCHEMA_VERSION, UUID.randomUUID().toString(), UAV_CODE,
+                DeviceMessages.SCHEMA_VERSION, telemetryEventId, UAV_CODE,
                 sequence + 1, observedAt, "FLYING", 67, 32.0601, 118.7801, 51.5, 9.2));
 
             await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
@@ -116,7 +117,15 @@ class RemoteReliabilityContractTest {
                     .hasSize(1));
             await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
                 assertThat(events.replaySince("0"))
-                    .anyMatch(event -> "telemetry-delta".equals(event.name())));
+                    .anyMatch(event -> "telemetry-delta".equals(event.name())
+                        && json.valueToTree(event.payload()).toString()
+                            .contains("\"battery\":67")));
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM outbox
+                    WHERE event_type = 'uav.telemetry' AND aggregate_id = ?
+                      AND payload LIKE ? AND published_at IS NOT NULL
+                    """, Integer.class, UAV_CODE, "%" + telemetryEventId + "%")).isEqualTo(1));
 
             String key = "remote-contract-" + UUID.randomUUID();
             CommandDispatcher.Issued first = commands.issue(
