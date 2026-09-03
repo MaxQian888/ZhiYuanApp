@@ -96,7 +96,11 @@ export function ProductPage({ view }: { view: ProductView }) {
       <main className="product-page" data-view={view}>
         {content}
         <footer className="app-footer">
-          © 2026 · ZHIYUAN OPERATIONS · API v1 · {isRemoteApi ? "REMOTE" : "SIMULATOR"}
+          <span>© 2026 {locale === "zh-CN" ? "智鸢运营平台" : "ZhiYuan Operations"}</span>
+          <span className="app-footer-mode">
+            <code>API v1</code>
+            <code>{isRemoteApi ? "REMOTE" : "SIMULATOR"}</code>
+          </span>
         </footer>
       </main>
     </AppShell>

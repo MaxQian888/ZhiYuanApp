@@ -73,13 +73,13 @@ describe("AppShell chrome", () => {
   it("shows the route context for the active page", () => {
     pathname = "/orders"
     renderShell()
-    expect(screen.getByText("OPS / 订单")).toBeInTheDocument()
+    expect(document.querySelector(".route-context")).toHaveTextContent("订单")
   })
 
   it("names the map route even though it has no sidebar entry", () => {
     pathname = "/map"
     renderShell()
-    expect(screen.getByText("OPS / 地图定位")).toBeInTheDocument()
+    expect(document.querySelector(".route-context")).toHaveTextContent("地图定位")
   })
 
   it("toggles the interface language", async () => {

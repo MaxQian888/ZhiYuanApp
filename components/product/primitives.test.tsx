@@ -65,7 +65,7 @@ describe("StatusPill", () => {
 })
 
 describe("MetricStrip", () => {
-  it("numbers each metric and only renders a detail when one is supplied", () => {
+  it("labels every metric and only renders a detail when one is supplied", () => {
     render(
       <MetricStrip
         items={[
@@ -74,9 +74,10 @@ describe("MetricStrip", () => {
         ]}
       />
     )
-    expect(screen.getByText("01")).toBeInTheDocument()
-    expect(screen.getByText("02")).toBeInTheDocument()
+    expect(screen.getByText("无人机总数")).toBeInTheDocument()
+    expect(screen.getByText("在线无人机")).toBeInTheDocument()
     expect(screen.getByText("5 实时")).toBeInTheDocument()
+    expect(screen.getAllByRole("term")).toHaveLength(2)
     expect(screen.getAllByRole("definition")).toHaveLength(2)
   })
 })

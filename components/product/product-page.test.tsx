@@ -664,7 +664,7 @@ describe("GoodsView", () => {
   it("filters by category", async () => {
     const user = userEvent.setup()
     renderView("goods")
-    await user.selectOptions(screen.getByLabelText("分类"), "MEDICINE")
+    await user.selectOptions(screen.getByLabelText("分类"), "医药")
     await waitFor(() => expect(screen.queryByText("冷链餐食 A")).toBeNull())
   })
 
@@ -678,9 +678,9 @@ describe("GoodsView", () => {
     expect(within(dialog).getByText("价格、库存和重量必须为非负数。")).toBeInTheDocument()
 
     await user.type(within(dialog).getByLabelText("商品"), "测试商品")
-    await user.clear(within(dialog).getByLabelText("Price"))
-    await user.type(within(dialog).getByLabelText("Price"), "12")
-    await user.selectOptions(within(dialog).getByLabelText("Category"), "medicine")
+    await user.clear(within(dialog).getByLabelText("价格"))
+    await user.type(within(dialog).getByLabelText("价格"), "12")
+    await user.selectOptions(within(dialog).getByLabelText("分类"), "medicine")
     await user.click(within(dialog).getByRole("button", { name: "保存" }))
 
     await waitFor(() => expect(useProductStore.getState().goods.length).toBe(before + 1))

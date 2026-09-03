@@ -47,17 +47,17 @@ import { extractSingleInstanceRoute, listenForSecondInstance } from "@/lib/tauri
 import { useProductStore } from "@/stores/product-store"
 
 const nav = [
-  { href: "/", key: "dashboard", icon: Home, code: "01" },
-  { href: "/uavs", key: "uavs", icon: Plane, code: "02" },
-  { href: "/voice", key: "voice", icon: Mic, code: "03" },
-  { href: "/alerts", key: "alerts", icon: AlertTriangle, code: "04" },
-  { href: "/logs", key: "logs", icon: FileClock, code: "05" },
-  { href: "/pods", key: "pods", icon: Warehouse, code: "06" },
-  { href: "/users", key: "users", icon: Users, code: "07" },
-  { href: "/goods", key: "goods", icon: Package, code: "08" },
-  { href: "/orders", key: "orders", icon: ClipboardList, code: "09" },
-  { href: "/tasks", key: "tasks", icon: Boxes, code: "10" },
-  { href: "/settings", key: "settings", icon: Settings, code: "11" },
+  { href: "/", key: "dashboard", icon: Home },
+  { href: "/uavs", key: "uavs", icon: Plane },
+  { href: "/voice", key: "voice", icon: Mic },
+  { href: "/alerts", key: "alerts", icon: AlertTriangle },
+  { href: "/logs", key: "logs", icon: FileClock },
+  { href: "/pods", key: "pods", icon: Warehouse },
+  { href: "/users", key: "users", icon: Users },
+  { href: "/goods", key: "goods", icon: Package },
+  { href: "/orders", key: "orders", icon: ClipboardList },
+  { href: "/tasks", key: "tasks", icon: Boxes },
+  { href: "/settings", key: "settings", icon: Settings },
 ] as const
 
 const navGroups = [
@@ -92,6 +92,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const realtimeState = useProductStore((state) => state.realtimeState)
   const dataSyncPending = useProductStore((state) => state.dataSyncPending)
   const dataSyncErrors = useProductStore((state) => state.dataSyncErrors)
+  const staff = useProductStore((state) => state.staff)
   const copy = useCopy(locale)
   const activeItem = nav.find(
     (item) => pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
@@ -258,7 +259,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="top-actions">
           {routeLabel && (
             <span className="route-context" aria-hidden="true">
-              OPS / {routeLabel}
+              {routeLabel}
             </span>
           )}
           <span className="connection">
@@ -285,6 +286,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Languages size={18} />
             <span>{locale === "zh-CN" ? "EN" : "中"}</span>
           </Button>
+          {staff && (
+            <Link
+              href="/settings"
+              className="account-chip"
+              aria-label={`${copy.settings} · ${staff.displayName}`}
+            >
+              <span className="account-avatar" aria-hidden="true">
+                {staff.displayName.slice(0, 1)}
+              </span>
+              <span>
+                <strong>{staff.displayName}</strong>
+                <small>{staff.role}</small>
+              </span>
+            </Link>
+          )}
         </div>
       </header>
       {isRemoteApi && (dataSyncPending || dataSyncErrors.length > 0) && (
@@ -330,19 +346,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {navGroups.map((group) => (
           <div className="nav-group" key={group.label.en}>
             <span className="nav-group-label">{group.label[locale]}</span>
-            {group.items.map(({ href, key, icon: Icon, code }) => (
+            {group.items.map(({ href, key, icon: Icon }) => (
               <Link
                 key={href}
                 href={href}
+                aria-current={
+                  pathname === href || (href !== "/" && pathname.startsWith(href))
+                    ? "page"
+                    : undefined
+                }
                 className={
                   pathname === href || (href !== "/" && pathname.startsWith(href))
                     ? "nav-link is-active"
                     : "nav-link"
                 }
               >
-                <Icon size={18} aria-hidden="true" />
+                <Icon size={17} aria-hidden="true" />
                 <span>{copy[key]}</span>
-                <small aria-hidden="true">{code}</small>
               </Link>
             ))}
           </div>

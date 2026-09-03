@@ -40,14 +40,23 @@ export function PageHeader({
   )
 }
 
+/**
+ * A titled card.
+ *
+ * `toolbar` exists so that a list's filters live inside the card they filter. Floating them
+ * above it as a second card reads as two unrelated panels, and on a narrow screen the two
+ * stacks of rounded corners eat the space the list needs.
+ */
 export function Section({
   title,
   action,
+  toolbar,
   children,
   tone,
 }: {
   title: string
   action?: ReactNode
+  toolbar?: ReactNode
   children: ReactNode
   tone?: "dark"
 }) {
@@ -60,6 +69,7 @@ export function Section({
         </span>
         {action}
       </div>
+      {toolbar && <div className="section-toolbar">{toolbar}</div>}
       {children}
     </section>
   )
@@ -99,11 +109,8 @@ export function MetricStrip({
 }) {
   return (
     <dl className="metric-strip">
-      {items.map((item, index) => (
+      {items.map((item) => (
         <div key={item.label}>
-          <span className="metric-index" aria-hidden="true">
-            {String(index + 1).padStart(2, "0")}
-          </span>
           <dt>{item.label}</dt>
           <dd>{item.value}</dd>
           {item.detail && <small>{item.detail}</small>}
