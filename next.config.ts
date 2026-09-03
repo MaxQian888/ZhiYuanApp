@@ -6,6 +6,7 @@ const withNextIntl = createNextIntlPlugin("./i18n/request.ts")
 const isProd = process.env.NODE_ENV === "production"
 
 const internalHost = process.env.TAURI_DEV_HOST || "localhost"
+const devPort = process.env.PORT || "3000"
 
 // Enable static export for Tauri production builds.
 // This makes `pnpm build` generate the `out/` directory that Tauri loads from `src-tauri/tauri.conf.json` (frontendDist: "../out").
@@ -17,7 +18,7 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
   // Configure assetPrefix or else the server won't properly resolve your assets.
-  assetPrefix: isProd ? undefined : `http://${internalHost}:3000`,
+  assetPrefix: isProd ? undefined : `http://${internalHost}:${devPort}`,
 }
 
 export default withNextIntl(nextConfig)

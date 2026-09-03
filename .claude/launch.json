@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "zhiyuan-web",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "NEXT_PUBLIC_API_MODE=simulator pnpm dev"],
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}
