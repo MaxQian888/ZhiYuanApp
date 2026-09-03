@@ -301,9 +301,11 @@ function DevelopmentMapSurface({
       )}
       <div
         className="map-marker"
+        // Clamped, not just positioned: the label is a fixed-width chip, and on a phone a
+        // device near the right edge would otherwise wrap or be cut off by the surface.
         style={{
-          left: `${currentPoint.x}%`,
-          top: `${(currentPoint.y / 60) * 100}%`,
+          left: `clamp(0.5rem, ${currentPoint.x}%, 100% - 8rem)`,
+          top: `clamp(0.5rem, ${(currentPoint.y / 60) * 100}%, 100% - 3rem)`,
           transform: `scale(${0.85 + zoom * 0.03})`,
         }}
       >

@@ -412,52 +412,56 @@ export function UavListView() {
           </Button>
         }
       />
-      <div className="filter-bar">
-        <label className="search-field">
-          <Search size={17} />
-          <Input
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setPage(1)
-            }}
-            placeholder={copy.searchUav}
-          />
-        </label>
-        <label>
-          <span className="sr-only">{copy.status}</span>
-          <NativeSelect
-            value={status}
-            onChange={(event) => {
-              setStatus(event.target.value as UavStatus | "ALL")
-              setPage(1)
-            }}
-          >
-            <NativeSelectOption value="ALL">{copy.allStatus}</NativeSelectOption>
-            {["ONLINE", "OFFLINE", "FLYING", "CHARGING"].map((value) => (
-              <NativeSelectOption key={value}>{value}</NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </label>
-        <label>
-          <span className="sr-only">{copy.region}</span>
-          <NativeSelect
-            value={region}
-            onChange={(event) => {
-              setRegion(event.target.value)
-              setPage(1)
-            }}
-          >
-            <NativeSelectOption value="ALL">
-              {store.locale === "zh-CN" ? "全部区域" : "All regions"}
-            </NativeSelectOption>
-            {regions.map((value) => (
-              <NativeSelectOption key={value}>{value}</NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </label>
-      </div>
-      <Section title={`${copy.uavs} · ${total}`}>
+      <Section
+        title={`${copy.uavs} · ${total}`}
+        toolbar={
+          <>
+            <label className="search-field">
+              <Search size={17} />
+              <Input
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setPage(1)
+                }}
+                placeholder={copy.searchUav}
+              />
+            </label>
+            <label>
+              <span className="sr-only">{copy.status}</span>
+              <NativeSelect
+                value={status}
+                onChange={(event) => {
+                  setStatus(event.target.value as UavStatus | "ALL")
+                  setPage(1)
+                }}
+              >
+                <NativeSelectOption value="ALL">{copy.allStatus}</NativeSelectOption>
+                {["ONLINE", "OFFLINE", "FLYING", "CHARGING"].map((value) => (
+                  <NativeSelectOption key={value}>{value}</NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+            <label>
+              <span className="sr-only">{copy.region}</span>
+              <NativeSelect
+                value={region}
+                onChange={(event) => {
+                  setRegion(event.target.value)
+                  setPage(1)
+                }}
+              >
+                <NativeSelectOption value="ALL">
+                  {store.locale === "zh-CN" ? "全部区域" : "All regions"}
+                </NativeSelectOption>
+                {regions.map((value) => (
+                  <NativeSelectOption key={value}>{value}</NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+          </>
+        }
+      >
         {isRemoteApi && serverPage.isError ? (
           <QueryError locale={store.locale} onRetry={() => void serverPage.refetch()} />
         ) : isRemoteApi && serverPage.isPending ? (

@@ -156,6 +156,28 @@ export function OrdersView({ detail = false }: { detail?: boolean }) {
           </Button>
         }
       />
+      <MetricStrip
+        items={[
+          {
+            label: store.locale === "zh-CN" ? "订单总数" : "Orders",
+            value: store.orders.length,
+          },
+          {
+            label: store.locale === "zh-CN" ? "待调度" : "Awaiting dispatch",
+            value: store.orders.filter((item) => item.status === "CREATED").length,
+          },
+          {
+            label: store.locale === "zh-CN" ? "配送中" : "In delivery",
+            value: store.orders.filter((item) =>
+              ["DISPATCHING", "DELIVERING"].includes(item.status)
+            ).length,
+          },
+          {
+            label: store.locale === "zh-CN" ? "订单金额" : "Order value",
+            value: `¥${store.orders.reduce((total, item) => total + item.totalPrice, 0).toFixed(2)}`,
+          },
+        ]}
+      />
       <Section title={`${copy.orders} · ${store.orders.length}`}>
         <div className="data-table compact orders-table">
           <div className="table-head">
@@ -174,7 +196,9 @@ export function OrdersView({ detail = false }: { detail?: boolean }) {
               <span data-label={copy.users}>
                 {store.users.find((user) => user.id === item.userId)?.username}
               </span>
-              <span data-label="Total">¥{item.totalPrice.toFixed(2)}</span>
+              <span data-label={store.locale === "zh-CN" ? "金额" : "Total"}>
+                ¥{item.totalPrice.toFixed(2)}
+              </span>
               <span data-label={copy.status}>
                 <StatusPill value={item.status} />
               </span>

@@ -161,7 +161,9 @@ export function LoginView() {
                 : copy.loginDemo}
             </small>
           </form>
-          <footer>© 2026 · ZHIYUAN OPERATIONS · v1.0.0</footer>
+          <footer>
+            © 2026 {store.locale === "zh-CN" ? "智鸢运营平台" : "ZhiYuan Operations"} · v1.0.0
+          </footer>
         </section>
       </main>
     </div>

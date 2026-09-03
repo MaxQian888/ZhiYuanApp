@@ -1,7 +1,13 @@
 "use client"
 
 import { useState } from "react"
-import { Field, PageHeader, Section, StatusPill } from "@/components/product/primitives"
+import {
+  Field,
+  MetricStrip,
+  PageHeader,
+  Section,
+  StatusPill,
+} from "@/components/product/primitives"
 import { executeAction } from "@/components/product/view-kit"
 import { Button } from "@/components/ui/button"
 import {
@@ -31,6 +37,27 @@ export function TasksView() {
             : "Run the delivery state machine; invalid transitions are rejected."
         }
       />
+      <MetricStrip
+        items={[
+          {
+            label: store.locale === "zh-CN" ? "任务总数" : "Tasks",
+            value: store.tasks.length,
+          },
+          {
+            label: store.locale === "zh-CN" ? "待起飞" : "Waiting",
+            value: store.tasks.filter((task) => task.taskStatus === "WAITING").length,
+          },
+          {
+            label: store.locale === "zh-CN" ? "飞行中" : "In flight",
+            value: store.tasks.filter((task) => task.taskStatus === "FLYING").length,
+          },
+          {
+            label: store.locale === "zh-CN" ? "已完成" : "Finished",
+            value: store.tasks.filter((task) => ["ARRIVED", "FINISHED"].includes(task.taskStatus))
+              .length,
+          },
+        ]}
+      />
       <Section title={`${copy.tasks} · ${store.tasks.length}`}>
         <div className="task-list">
           {store.tasks.map((task) => (
@@ -39,7 +66,10 @@ export function TasksView() {
                 <strong>TSK-{String(task.id).padStart(4, "0")}</strong>
                 <small>{store.orders.find((item) => item.id === task.orderId)?.orderNo}</small>
               </span>
-              <span>{store.uavs.find((item) => item.id === task.uavId)?.code}</span>
+              <span>
+                <small>{copy.uavs}</small>
+                {store.uavs.find((item) => item.id === task.uavId)?.code}
+              </span>
               <StatusPill value={task.taskStatus} />
               {task.failureReason && <small>{task.failureReason}</small>}
               <div>

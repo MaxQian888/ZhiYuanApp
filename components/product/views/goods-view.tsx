@@ -37,6 +37,22 @@ import { isRemoteApi } from "@/lib/env"
 import { useCopy } from "@/lib/i18n-product"
 import { useProductStore } from "@/stores/product-store"
 
+const categoryKeys = ["food", "medicine", "life", "industry"] as const
+
+/**
+ * Display names for the four goods categories.
+ *
+ * The stored value stays the English key, because it is what the API filters on. Only the
+ * label is translated, so a Chinese console stops showing "MEDICINE" in the middle of a
+ * Chinese sentence.
+ */
+const categoryNames: Record<(typeof categoryKeys)[number], Record<"zh-CN" | "en", string>> = {
+  food: { "zh-CN": "食品", en: "Food" },
+  medicine: { "zh-CN": "医药", en: "Medicine" },
+  life: { "zh-CN": "生活", en: "Life" },
+  industry: { "zh-CN": "工业", en: "Industry" },
+}
+
 export function GoodsView() {
   const store = useProductStore()
   const copy = useCopy(store.locale)
@@ -82,9 +98,10 @@ export function GoodsView() {
     setSaving(false)
     if (result.ok) setEditing(null)
   }
-  const categoryCounts = ["food", "medicine", "life", "industry"].map((category) => ({
-    label: category.toUpperCase(),
-    value: store.goods.filter((item) => item.category === category).length,
+  const categoryCounts = categoryKeys.map((key) => ({
+    key,
+    label: categoryNames[key][store.locale],
+    value: store.goods.filter((item) => item.category === key).length,
   }))
   const filteredGoods = store.goods.filter(
     (item) =>
@@ -144,40 +161,44 @@ export function GoodsView() {
           </>
         }
       />
-      <div className="filter-bar">
-        <label className="search-field">
-          <Search size={17} />
-          <Input
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setPage(1)
-            }}
-            placeholder={store.locale === "zh-CN" ? "搜索商品" : "Search goods"}
-          />
-        </label>
-        <label>
-          <span className="sr-only">{store.locale === "zh-CN" ? "分类" : "Category"}</span>
-          <NativeSelect
-            value={category}
-            onChange={(event) => {
-              setCategory(event.target.value as Goods["category"] | "ALL")
-              setPage(1)
-            }}
-          >
-            <NativeSelectOption value="ALL">
-              {store.locale === "zh-CN" ? "全部分类" : "All categories"}
-            </NativeSelectOption>
-            {categoryCounts.map((item) => (
-              <NativeSelectOption key={item.label} value={item.label.toLowerCase()}>
-                {item.label}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </label>
-      </div>
       <MetricStrip items={categoryCounts} />
-      <Section title={`${copy.goods} · ${total}`}>
+      <Section
+        title={`${copy.goods} · ${total}`}
+        toolbar={
+          <>
+            <label className="search-field">
+              <Search size={17} />
+              <Input
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setPage(1)
+                }}
+                placeholder={store.locale === "zh-CN" ? "搜索商品" : "Search goods"}
+              />
+            </label>
+            <label>
+              <span className="sr-only">{store.locale === "zh-CN" ? "分类" : "Category"}</span>
+              <NativeSelect
+                value={category}
+                onChange={(event) => {
+                  setCategory(event.target.value as Goods["category"] | "ALL")
+                  setPage(1)
+                }}
+              >
+                <NativeSelectOption value="ALL">
+                  {store.locale === "zh-CN" ? "全部分类" : "All categories"}
+                </NativeSelectOption>
+                {categoryCounts.map((item) => (
+                  <NativeSelectOption key={item.key} value={item.key}>
+                    {item.label}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+          </>
+        }
+      >
         {isRemoteApi && serverPage.isError ? (
           <QueryError locale={store.locale} onRetry={() => void serverPage.refetch()} />
         ) : isRemoteApi && serverPage.isPending ? (
@@ -216,8 +237,12 @@ export function GoodsView() {
                   <strong>{item.name}</strong>
                   <small>{item.weight} kg</small>
                 </span>
-                <span data-label="Category">{item.category}</span>
-                <span data-label="Price">¥{item.price.toFixed(2)}</span>
+                <span data-label={store.locale === "zh-CN" ? "分类" : "Category"}>
+                  {categoryNames[item.category][store.locale]}
+                </span>
+                <span data-label={store.locale === "zh-CN" ? "价格" : "Price"}>
+                  ¥{item.price.toFixed(2)}
+                </span>
                 <span data-label={store.locale === "zh-CN" ? "可用库存" : "Available"}>
                   {item.stock}
                 </span>
@@ -282,19 +307,21 @@ export function GoodsView() {
                 onChange={(e) => setEditing((v) => ({ ...v, name: e.target.value }))}
               />
             </Field>
-            <Field label="Category">
+            <Field label={store.locale === "zh-CN" ? "分类" : "Category"}>
               <NativeSelect
                 value={editing?.category ?? "life"}
                 onChange={(e) =>
                   setEditing((v) => ({ ...v, category: e.target.value as Goods["category"] }))
                 }
               >
-                {["food", "medicine", "life", "industry"].map((value) => (
-                  <NativeSelectOption key={value}>{value}</NativeSelectOption>
+                {categoryKeys.map((value) => (
+                  <NativeSelectOption key={value} value={value}>
+                    {categoryNames[value][store.locale]}
+                  </NativeSelectOption>
                 ))}
               </NativeSelect>
             </Field>
-            <Field label="Price">
+            <Field label={store.locale === "zh-CN" ? "价格" : "Price"}>
               <Input
                 type="number"
                 min="0"
@@ -302,7 +329,7 @@ export function GoodsView() {
                 onChange={(e) => setEditing((v) => ({ ...v, price: Number(e.target.value) }))}
               />
             </Field>
-            <Field label="Stock">
+            <Field label={store.locale === "zh-CN" ? "库存" : "Stock"}>
               <Input
                 type="number"
                 min="0"
@@ -310,7 +337,7 @@ export function GoodsView() {
                 onChange={(e) => setEditing((v) => ({ ...v, stock: Number(e.target.value) }))}
               />
             </Field>
-            <Field label="Weight">
+            <Field label={store.locale === "zh-CN" ? "重量" : "Weight"}>
               <Input
                 type="number"
                 min="0"

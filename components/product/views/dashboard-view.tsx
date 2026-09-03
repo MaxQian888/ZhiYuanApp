@@ -1,6 +1,6 @@
 "use client"
 
-import { AlertTriangle, Battery, ChevronRight, Plane } from "lucide-react"
+import { AlertTriangle, Battery, ChevronRight, Plane, Warehouse } from "lucide-react"
 import Link from "next/link"
 import { MetricStrip, PageHeader, Section, StatusPill } from "@/components/product/primitives"
 import { executeAction, formatDate } from "@/components/product/view-kit"
@@ -96,50 +96,81 @@ export function DashboardView() {
             ))}
           </div>
         </Section>
-        <Section
-          title={copy.recentAlerts}
-          action={
-            <Link className="text-link" href="/alerts">
-              {copy.viewAll} →
-            </Link>
-          }
-        >
-          <div className="alert-list">
-            {openAlerts.map((alert) => (
-              <div className="alert-row" key={alert.id}>
-                <AlertTriangle size={18} />
-                <span>
-                  <strong>{alert.title}</strong>
-                  <small>{formatDate(alert.occurredAt, store.locale)}</small>
-                </span>
-                <StatusPill value={alert.level} />
-                <Button
-                  className="text-button"
-                  onClick={() =>
-                    void executeAction(
-                      () =>
+        <div className="workbench-column">
+          <Section
+            title={copy.recentAlerts}
+            action={
+              <Link className="text-link" href="/alerts">
+                {copy.viewAll} →
+              </Link>
+            }
+          >
+            <div className="alert-list">
+              {openAlerts.map((alert) => (
+                <div className="alert-row" key={alert.id}>
+                  <AlertTriangle size={18} />
+                  <span>
+                    <strong>{alert.title}</strong>
+                    <small>{formatDate(alert.occurredAt, store.locale)}</small>
+                  </span>
+                  <StatusPill value={alert.level} />
+                  <Button
+                    className="text-button"
+                    onClick={() =>
+                      void executeAction(
+                        () =>
+                          alert.status === "OPEN"
+                            ? store.acknowledgeAlert(alert.id)
+                            : store.resolveAlert(alert.id),
+                        store.locale,
                         alert.status === "OPEN"
-                          ? store.acknowledgeAlert(alert.id)
-                          : store.resolveAlert(alert.id),
-                      store.locale,
-                      alert.status === "OPEN"
-                        ? copy.acknowledge
+                          ? copy.acknowledge
+                          : store.locale === "zh-CN"
+                            ? "解除告警"
+                            : "Resolve alert"
+                      )
+                    }
+                  >
+                    {alert.status === "OPEN"
+                      ? copy.acknowledge
+                      : store.locale === "zh-CN"
+                        ? "解除"
+                        : "Resolve"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </Section>
+          <Section
+            title={copy.pods}
+            action={
+              <Link className="text-link" href="/pods">
+                {copy.viewAll} →
+              </Link>
+            }
+          >
+            <div className="pod-grid">
+              {store.pods.map((pod) => (
+                <div className="pod-row is-compact" key={pod.id}>
+                  <Warehouse />
+                  <span>
+                    <strong>{pod.name}</strong>
+                    <small>
+                      {pod.region} ·{" "}
+                      {pod.uavId
+                        ? (store.uavs.find((item) => item.id === pod.uavId)?.code ??
+                          (store.locale === "zh-CN" ? "已停放" : "Docked"))
                         : store.locale === "zh-CN"
-                          ? "解除告警"
-                          : "Resolve alert"
-                    )
-                  }
-                >
-                  {alert.status === "OPEN"
-                    ? copy.acknowledge
-                    : store.locale === "zh-CN"
-                      ? "解除"
-                      : "Resolve"}
-                </Button>
-              </div>
-            ))}
-          </div>
-        </Section>
+                          ? "空仓"
+                          : "Empty"}
+                    </small>
+                  </span>
+                  <StatusPill value={pod.doorStatus} />
+                </div>
+              ))}
+            </div>
+          </Section>
+        </div>
       </div>
       <Section title={copy.activeTasks} tone="dark">
         <div className="dark-table">

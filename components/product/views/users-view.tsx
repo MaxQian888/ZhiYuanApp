@@ -279,8 +279,8 @@ export function UsersView() {
                 <strong>{user.username}</strong>
                 <small>USR-{String(user.id).padStart(4, "0")}</small>
               </span>
-              <span data-label="Phone">{user.phone}</span>
-              <span data-label="Addresses">
+              <span data-label={store.locale === "zh-CN" ? "手机号" : "Phone"}>{user.phone}</span>
+              <span data-label={store.locale === "zh-CN" ? "地址" : "Addresses"}>
                 <Button
                   variant="link"
                   size="sm"

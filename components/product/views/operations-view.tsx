@@ -73,35 +73,60 @@ export function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
               : "Review, acknowledge, and trace alerts by severity."
           }
         />
-        <Section title={`${copy.alerts} · ${visibleAlerts.length}`}>
-          <div className="filter-toolbar">
-            <Field label={store.locale === "zh-CN" ? "告警等级" : "Severity"}>
-              <NativeSelect
-                value={alertLevel}
-                onChange={(event) => setAlertLevel(event.target.value)}
-              >
-                <NativeSelectOption value="ALL">
-                  {store.locale === "zh-CN" ? "全部" : "All"}
-                </NativeSelectOption>
-                <NativeSelectOption value="HIGH">HIGH</NativeSelectOption>
-                <NativeSelectOption value="MID">MID</NativeSelectOption>
-                <NativeSelectOption value="LOW">LOW</NativeSelectOption>
-              </NativeSelect>
-            </Field>
-            <Field label={copy.status}>
-              <NativeSelect
-                value={alertStatus}
-                onChange={(event) => setAlertStatus(event.target.value)}
-              >
-                <NativeSelectOption value="ALL">
-                  {store.locale === "zh-CN" ? "全部" : "All"}
-                </NativeSelectOption>
-                <NativeSelectOption value="OPEN">OPEN</NativeSelectOption>
-                <NativeSelectOption value="ACKNOWLEDGED">ACKNOWLEDGED</NativeSelectOption>
-                <NativeSelectOption value="RESOLVED">RESOLVED</NativeSelectOption>
-              </NativeSelect>
-            </Field>
-          </div>
+        <MetricStrip
+          items={[
+            {
+              label: store.locale === "zh-CN" ? "未处理" : "Open",
+              value: store.alerts.filter((item) => item.status === "OPEN").length,
+              detail: `${store.alerts.length} ${store.locale === "zh-CN" ? "条记录" : "total"}`,
+            },
+            {
+              label: store.locale === "zh-CN" ? "高优先级" : "High severity",
+              value: store.alerts.filter((item) => item.level === "HIGH" && !item.resolved).length,
+            },
+            {
+              label: store.locale === "zh-CN" ? "已确认" : "Acknowledged",
+              value: store.alerts.filter((item) => item.status === "ACKNOWLEDGED").length,
+            },
+            {
+              label: store.locale === "zh-CN" ? "已解除" : "Resolved",
+              value: store.alerts.filter((item) => item.status === "RESOLVED").length,
+            },
+          ]}
+        />
+        <Section
+          title={`${copy.alerts} · ${visibleAlerts.length}`}
+          toolbar={
+            <>
+              <Field label={store.locale === "zh-CN" ? "告警等级" : "Severity"}>
+                <NativeSelect
+                  value={alertLevel}
+                  onChange={(event) => setAlertLevel(event.target.value)}
+                >
+                  <NativeSelectOption value="ALL">
+                    {store.locale === "zh-CN" ? "全部" : "All"}
+                  </NativeSelectOption>
+                  <NativeSelectOption value="HIGH">HIGH</NativeSelectOption>
+                  <NativeSelectOption value="MID">MID</NativeSelectOption>
+                  <NativeSelectOption value="LOW">LOW</NativeSelectOption>
+                </NativeSelect>
+              </Field>
+              <Field label={copy.status}>
+                <NativeSelect
+                  value={alertStatus}
+                  onChange={(event) => setAlertStatus(event.target.value)}
+                >
+                  <NativeSelectOption value="ALL">
+                    {store.locale === "zh-CN" ? "全部" : "All"}
+                  </NativeSelectOption>
+                  <NativeSelectOption value="OPEN">OPEN</NativeSelectOption>
+                  <NativeSelectOption value="ACKNOWLEDGED">ACKNOWLEDGED</NativeSelectOption>
+                  <NativeSelectOption value="RESOLVED">RESOLVED</NativeSelectOption>
+                </NativeSelect>
+              </Field>
+            </>
+          }
+        >
           <div className="data-table compact">
             <div className="table-head">
               <span>{copy.alerts}</span>
@@ -114,7 +139,7 @@ export function OperationsView({ view }: { view: "alerts" | "logs" | "pods" }) {
               <div className="table-row" key={item.id}>
                 <span data-label={copy.alerts}>
                   <strong>{item.title}</strong>
-                  <small>{item.level}</small>
+                  <StatusPill value={item.level} />
                 </span>
                 <span data-label={copy.uavs}>
                   {item.uavId ? (
