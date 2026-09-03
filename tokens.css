@@ -1,33 +1,67 @@
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5 */
-/* Hallmark · macrostructure: Workbench (grouped rail + numbered metrics) · genre: modern-minimal · theme: Cobalt · tone: precise + technical · nav: N13 · footer: Ft2 · enrichment: none · designed-as-app */
-:root {
-  --color-paper: oklch(0.985 0.004 250);
-  --color-paper-2: oklch(0.965 0.006 250);
-  --color-paper-3: oklch(0.94 0.009 250);
-  --color-paper-4: oklch(0.915 0.012 250);
-  --color-ink: oklch(0.24 0.02 258);
-  --color-ink-2: oklch(0.34 0.018 257);
-  --color-muted: oklch(0.5 0.018 257);
-  --color-rule: oklch(0.86 0.012 252);
-  --color-rule-2: oklch(0.73 0.022 252);
-  --color-accent: oklch(0.58 0.2 256);
-  --color-accent-ink: oklch(0.99 0.002 250);
-  --color-accent-soft: oklch(0.94 0.035 256);
-  --color-accent-muted: oklch(0.72 0.11 256);
-  --color-focus: oklch(0.45 0.19 256);
-  --color-success: oklch(0.48 0.13 153);
-  --color-success-soft: oklch(0.94 0.035 153);
-  --color-warning: oklch(0.56 0.15 68);
-  --color-warning-soft: oklch(0.95 0.045 78);
-  --color-danger: oklch(0.53 0.2 27);
-  --color-danger-soft: oklch(0.95 0.035 27);
-  --color-graphite: oklch(0.22 0.016 260);
-  --color-graphite-2: oklch(0.3 0.018 260);
-  --color-overlay: oklch(0.16 0.015 260 / 0.55);
+/* Hallmark · macrostructure: Console (ruled surfaces on warm paper) · genre: technical-editorial
+   · theme: Ink & Signal · tone: precise + calm · nav: N13 · footer: Ft2 · enrichment: none
+   · designed-as-app */
 
-  --font-display: var(--font-space-grotesk), "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-body: var(--font-inter), "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: var(--font-jetbrains-mono), "SFMono-Regular", Consolas, monospace;
+/*
+ * Ink is the brand. Colour is the alarm.
+ *
+ * The primary control colour here is near-black, and the four status hues are the only
+ * saturated things on the screen. That is the whole system: if something on this console is
+ * coloured, it is telling you about the state of a drone, a pod or an order. Buttons, the
+ * active rail item and the brand mark are ink, so they never compete with a red battery.
+ *
+ * The one exception is `--color-accent`, a deep slate blue reserved for links, focus rings
+ * and selection. It reads as "you can act on this" and is deliberately duller than any
+ * status colour, so it never wins a glance against them.
+ */
+:root {
+  /* Warm paper rather than blue-grey. Neutral greys go cold under a white drone photo and
+     make everything above them look like a default. */
+  --color-paper: oklch(0.972 0.004 85);
+  --color-paper-2: oklch(0.952 0.005 85);
+  --color-paper-3: oklch(0.922 0.006 82);
+  --color-paper-4: oklch(0.885 0.008 80);
+
+  --color-surface: oklch(0.995 0.002 85);
+  --color-surface-2: oklch(0.978 0.004 85);
+  --color-surface-3: oklch(0.958 0.005 85);
+  --color-surface-veil: oklch(0.995 0.002 85 / 0.92);
+
+  --color-ink: oklch(0.2 0.008 70);
+  --color-ink-2: oklch(0.36 0.008 70);
+  --color-muted: oklch(0.53 0.008 72);
+  --color-faint: oklch(0.65 0.008 74);
+
+  --color-rule: oklch(0.895 0.006 80);
+  --color-rule-2: oklch(0.82 0.008 78);
+
+  /* Interactive, not decorative. */
+  --color-accent: oklch(0.44 0.11 248);
+  --color-accent-ink: oklch(0.99 0.002 85);
+  --color-accent-soft: oklch(0.945 0.022 248);
+  --color-accent-soft-2: oklch(0.89 0.04 248);
+  --color-accent-muted: oklch(0.6 0.09 248);
+  --color-focus: oklch(0.44 0.11 248);
+
+  /* Earth-toned rather than pastel. A pastel ramp on a white card is the look every
+     generated dashboard has, and it also reads as decoration instead of state. */
+  --color-success: oklch(0.47 0.1 155);
+  --color-success-soft: oklch(0.945 0.028 155);
+  --color-warning: oklch(0.53 0.11 72);
+  --color-warning-soft: oklch(0.95 0.035 78);
+  --color-danger: oklch(0.48 0.15 32);
+  --color-danger-soft: oklch(0.945 0.03 32);
+  --color-info: oklch(0.5 0.06 245);
+  --color-info-soft: oklch(0.945 0.018 245);
+
+  --color-graphite: oklch(0.2 0.01 70);
+  --color-graphite-2: oklch(0.3 0.01 70);
+  --color-overlay: oklch(0.18 0.008 70 / 0.5);
+
+  --font-display: var(--font-plex-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-body: var(--font-plex-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: var(--font-plex-mono), "SFMono-Regular", Consolas, monospace;
 
   --space-3xs: 0.125rem;
   --space-2xs: 0.25rem;
@@ -44,21 +78,41 @@
   --text-sm: 0.875rem;
   --text-base: 1rem;
   --text-lg: 1.125rem;
-  --text-xl: 1.5rem;
-  --text-2xl: clamp(1.75rem, 4vw, 2.5rem);
-  --text-3xl: clamp(2rem, 4.6vw, 3.25rem);
-  --text-display: clamp(2.25rem, 8vw, 5rem);
+  --text-xl: 1.25rem;
+  --text-2xl: clamp(1.5rem, 2.4vw, 1.9rem);
+  --text-3xl: clamp(1.75rem, 3.4vw, 2.5rem);
+  --text-display: clamp(2.25rem, 6vw, 3.75rem);
 
-  --radius-sm: 0.25rem;
-  --radius-md: 0.375rem;
-  --radius-lg: 0.625rem;
-  --radius-pill: 999px;
+  /* The micro-label. One size, one tracking, used for every caption in the product: metric
+     labels, table heads, status chips, rail group names. */
+  --text-micro: 0.6875rem;
+  --tracking-micro: 0.09em;
+
+  /* Named `r-*` rather than `radius-*` because Tailwind's `@theme` block owns `--radius-*`
+     and would silently win the cascade. Small on purpose: a 16px corner on everything is
+     what makes an interface look inflated. */
+  --r-xs: 0.25rem;
+  --r-sm: 0.375rem;
+  --r-md: 0.5rem;
+  --r-lg: 0.625rem;
+  --r-xl: 0.875rem;
+  --r-2xl: 1.25rem;
+  --r-pill: 999px;
+
   --rule-thin: 1px;
   --rule-strong: 2px;
 
-  --dur-fast: 120ms;
-  --dur-base: 200ms;
-  --dur-slow: 400ms;
+  /* Structure comes from rules and tone, not from drop shadows. What is left is reserved
+     for things that genuinely float above the page. */
+  --shadow-xs: none;
+  --shadow-sm: 0 1px 2px oklch(0.2 0.008 70 / 0.06);
+  --shadow-md: 0 8px 24px -12px oklch(0.2 0.008 70 / 0.22);
+  --shadow-lg: 0 24px 60px -24px oklch(0.2 0.008 70 / 0.35);
+  --ring-accent: 0 0 0 3px oklch(0.44 0.11 248 / 0.16);
+
+  --dur-fast: 110ms;
+  --dur-base: 180ms;
+  --dur-slow: 360ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
@@ -73,21 +127,46 @@
 }
 
 .dark {
-  --color-paper: oklch(0.18 0.016 260);
-  --color-paper-2: oklch(0.22 0.018 260);
-  --color-paper-3: oklch(0.27 0.02 260);
-  --color-paper-4: oklch(0.31 0.022 260);
-  --color-ink: oklch(0.95 0.008 250);
-  --color-ink-2: oklch(0.84 0.012 250);
-  --color-muted: oklch(0.7 0.014 250);
-  --color-rule: oklch(0.34 0.022 255);
-  --color-rule-2: oklch(0.47 0.035 255);
-  --color-accent: oklch(0.68 0.17 252);
-  --color-accent-ink: oklch(0.16 0.02 260);
-  --color-accent-soft: oklch(0.27 0.05 256);
-  --color-accent-muted: oklch(0.64 0.12 256);
-  --color-focus: oklch(0.78 0.14 250);
-  --color-success-soft: oklch(0.27 0.045 153);
-  --color-warning-soft: oklch(0.3 0.05 70);
-  --color-danger-soft: oklch(0.29 0.06 27);
+  --color-paper: oklch(0.17 0.006 70);
+  --color-paper-2: oklch(0.205 0.006 70);
+  --color-paper-3: oklch(0.25 0.007 70);
+  --color-paper-4: oklch(0.31 0.008 70);
+
+  --color-surface: oklch(0.215 0.006 70);
+  --color-surface-2: oklch(0.24 0.007 70);
+  --color-surface-3: oklch(0.275 0.008 70);
+  --color-surface-veil: oklch(0.215 0.006 70 / 0.92);
+
+  --color-ink: oklch(0.96 0.004 85);
+  --color-ink-2: oklch(0.86 0.005 82);
+  --color-muted: oklch(0.7 0.006 78);
+  --color-faint: oklch(0.6 0.007 76);
+
+  --color-rule: oklch(0.31 0.008 72);
+  --color-rule-2: oklch(0.42 0.01 72);
+
+  --color-accent: oklch(0.72 0.11 248);
+  --color-accent-ink: oklch(0.17 0.006 70);
+  --color-accent-soft: oklch(0.28 0.04 248);
+  --color-accent-soft-2: oklch(0.35 0.06 248);
+  --color-accent-muted: oklch(0.6 0.09 248);
+  --color-focus: oklch(0.78 0.1 248);
+
+  --color-success: oklch(0.75 0.12 155);
+  --color-success-soft: oklch(0.27 0.04 155);
+  --color-warning: oklch(0.79 0.11 75);
+  --color-warning-soft: oklch(0.29 0.04 72);
+  --color-danger: oklch(0.7 0.14 32);
+  --color-danger-soft: oklch(0.28 0.05 32);
+  --color-info: oklch(0.72 0.07 245);
+  --color-info-soft: oklch(0.27 0.03 245);
+
+  --color-graphite: oklch(0.15 0.006 70);
+  --color-graphite-2: oklch(0.26 0.008 70);
+
+  --shadow-xs: none;
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.4);
+  --shadow-md: 0 8px 24px -12px oklch(0 0 0 / 0.6);
+  --shadow-lg: 0 24px 60px -24px oklch(0 0 0 / 0.7);
+  --ring-accent: 0 0 0 3px oklch(0.72 0.11 248 / 0.24);
 }

@@ -1,7 +1,6 @@
 jest.mock("next/font/google", () => ({
-  Space_Grotesk: () => ({ variable: "--font-space-grotesk" }),
-  Inter: () => ({ variable: "--font-inter" }),
-  JetBrains_Mono: () => ({ variable: "--font-jetbrains-mono" }),
+  IBM_Plex_Sans: () => ({ variable: "--font-plex-sans" }),
+  IBM_Plex_Mono: () => ({ variable: "--font-plex-mono" }),
 }))
 
 jest.mock("@/components/product/providers", () => ({
@@ -26,9 +25,8 @@ describe("RootLayout", () => {
       </RootLayout>
     )
     expect(markup).toContain('<html lang="zh-CN"')
-    expect(markup).toContain("--font-space-grotesk")
-    expect(markup).toContain("--font-inter")
-    expect(markup).toContain("--font-jetbrains-mono")
+    expect(markup).toContain("--font-plex-sans")
+    expect(markup).toContain("--font-plex-mono")
     expect(markup).toContain("<main>content</main>")
   })
 })
